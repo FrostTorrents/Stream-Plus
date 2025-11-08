@@ -1,6 +1,18 @@
-# 📦 Plex Plus – Changelog
+# 📦 Stream Plus — Changelog _(formerly Plex Plus)_
 
 All notable changes to this project will be documented in this file.
+
+---
+
+## [Unreleased] – Rebrand prep (no code release yet)
+
+### 🏷 Renamed
+- Project name changed from **Plex Plus** to **Stream Plus** across README, Wiki, and in-app/UI text (popup title, toasts, overlay labels).
+
+### 📌 Notes
+- The browser extension **manifest `"name"` will switch to “Stream Plus” in the next code update**.
+- No functional changes in this entry; brand/copy updates only.  
+- Storage keys and settings are unchanged; no migration needed.
 
 ---
 
