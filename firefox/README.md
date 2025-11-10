@@ -52,15 +52,27 @@ Everything runs locally in your browser — no accounts, no telemetry.
 
 ---
 
-## 🧩 Install (unpacked)
+## 🧩 Install on Firefox (Temporary)
 
-Until published in the store:
+Until it's published on [addons.mozilla.org](https://addons.mozilla.org/):
 
 1. Download this repository (Code → Download ZIP) and extract it.
-2. In Chrome/Edge, go to `chrome://extensions`.
-3. Enable **Developer mode**.
-4. Click **Load unpacked** and select the project folder.
-5. Open Plex and use the extension.
+2. Open `about:debugging#/runtime/this-firefox` in Firefox.
+3. Click **Load Temporary Add-on**.
+4. Select the `manifest.json` file from the extracted folder.
+5. Navigate to [https://app.plex.tv](https://app.plex.tv) and enjoy the extension.
+
+> ⚠ Firefox unloads temporary extensions on browser restart — repeat these steps to re-enable it.
+
+---
+
+## ⚠️ Known Limitation: Manual Skip Button
+
+If you disable the global **“Enable auto-skip”** toggle in Skipper, the native **Skip Intro** / **Skip Credits** buttons may still appear, but clicking them might not work (e.g., it pauses instead of skipping).  
+This is a known limitation in the current stable version and will be addressed in a future update.
+
+To work around this:
+- Keep **auto-skip enabled** globally, and use **per-show rules** to disable it where needed.
 
 ---
 
@@ -96,7 +108,7 @@ Latest: **v1.3.0 (2025-11-08)** — rename to Plex Plus, Beta tab, Episode Guard
 
 ## 🤝 Contributing
 
-Issues and PRs are welcome. Please keep features **local-only** and respect the privacy first approach.
+Issues and PRs are welcome. Please keep features **local-only** and respect the privacy-first approach.
 
 ---
 
