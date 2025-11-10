@@ -2,21 +2,20 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>Plex Sleep Timer</title>
+  <title>Stream Plus</title>
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
   <div class="tab-header">
     <button class="tab-button active" data-tab="timerTab">Sleep Timer</button>
-    <button class="tab-button" data-tab="skipperTab">Skipper</button>
+    <button class="tab-button" data-tab="rulesTab">Rules &amp; Skip</button>
     <button class="tab-button" data-tab="betaTab" id="betaTabBtn">Beta</button>
   </div>
-
 
   <!-- Sleep Timer Tab -->
   <div class="tab-content" id="timerTab" style="display:block;">
     <div class="container">
-      <h1>Plex Sleep Timer</h1>
+      <h1>Sleep Timer</h1>
 
       <div class="presets">
         <button class="preset" data-minutes="15">15m</button>
@@ -32,9 +31,9 @@
       <label><input type="checkbox" id="countdownToggle" /> Show countdown in player</label>
       <label><input type="checkbox" id="lowerVolumeCheckbox" /> Lower volume instead of mute/pause</label>
 
-      <div id="volumeLevelContainer" style="display: none; margin-left: 20px;">
-        Volume level (%): 
-        <input type="number" id="volumeLevelInput" min="0" max="100" value="10" style="width: 60px;" />
+      <div id="volumeLevelContainer" style="display:none; margin-left:20px;">
+        Volume level (%):
+        <input type="number" id="volumeLevelInput" min="0" max="100" value="10" style="width:60px;" />
       </div>
 
       <div class="buttons">
@@ -48,22 +47,34 @@
     </div>
   </div>
 
-  <!-- Skipper Tab -->
-  <div class="tab-content" id="skipperTab" style="display:none;">
+  <!-- NEW: Rules & Skip Tab (stable) -->
+  <div class="tab-content" id="rulesTab" style="display:none;">
     <div class="container">
-      <h1>Skipper</h1>
-      <label><input type="checkbox" id="enableSkipper" /> Enable Skipper</label>
+      <h1>Rules &amp; Skip</h1>
 
-      <div style="margin-top: 10px;">
-        <label for="skipperDelay">Delay between checks (ms):</label>
-        <input type="number" id="skipperDelay" min="100" step="100" value="1000" />
+      <label><input type="checkbox" id="enableSkipper" /> Enable auto-skip (intro &amp; credits)</label>
+      <label><input type="checkbox" id="enablePlayNext" /> Auto-play next episode</label>
+
+      <div style="margin-top:10px;">
+        <label for="skipperDelay">Check interval (ms)</label>
+        <input type="number" id="skipperDelay" min="100" step="100" value="600" />
       </div>
 
-      <button id="saveSkipperSettings" style="margin-top: 10px;">💾 Save</button>
+      <hr style="border:none;border-top:1px solid #2c2d31;margin:12px 0;" />
+
+      <label><input type="checkbox" id="perShowEn" /> Show per-show “Rules” chip in Plex</label>
+      <div class="hint">Use the chip on a show page to toggle: <em>Skip intro</em>, <em>Skip credits</em>, and <em>Lower volume</em> for that series.</div>
+
+      <div class="buttons" style="margin-top:12px;">
+        <button id="openRulesForThisShow">🎛 Open rules for this show</button>
+        <button id="saveRulesSettings" style="margin-left:auto;">💾 Save</button>
+      </div>
+
+      <div id="rulesStatus" class="hint" style="margin-top:8px;"></div>
     </div>
   </div>
 
-  <!-- Beta Tab -->
+  <!-- Beta Tab (per-show rules removed from here) -->
   <div class="tab-content" id="betaTab" style="display:none;">
     <div class="container">
       <h1 style="display:flex;align-items:center;gap:8px;">
@@ -88,24 +99,14 @@
         <div class="hint">Reduces ~5% every 30s instead of a hard cut.</div>
       </fieldset>
 
-      <fieldset style="border:1px solid #333;border-radius:8px;padding:10px;margin:10px 0;">
-        <legend>Per-Show Rules</legend>
-        <label><input type="checkbox" id="perShowEn" /> Enable per-show rules UI chip</label>
-        <div class="hint">On a show page, use the floating “Rules” chip to toggle: skip intro, skip credits, lower volume.</div>
-      </fieldset>
-
-      <h2 style="margin-top:14px;">Binge Suggestions</h2>
-      <div id="bingeCards" class="cards"></div>
-
       <button id="saveBeta" style="margin-top:12px;width:100%;">💾 Save Beta Settings</button>
+      <div id="betaStatus" class="hint" style="margin-top:8px;"></div>
     </div>
   </div>
-<!-- Support / Donate -->
-<div class="footer">
-  <button id="donateBtn" class="linklike" title="Support development">
-    ❤️ Support · Fund
-  </button>
-</div>
+
+  <div style="padding:10px;text-align:center;color:#a1a6b0;">
+    <button id="donateBtn" style="width:100%;">☕ Buy me a coffee</button>
+  </div>
 
   <script src="popup.js"></script>
 </body>
