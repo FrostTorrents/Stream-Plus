@@ -54,13 +54,23 @@ Everything runs locally in your browser — no accounts, no telemetry.
 
 ## 🧩 Install (unpacked)
 
-Until published in the store:
+### Chrome / Edge / Brave / Opera
 
 1. Download this repository (Code → Download ZIP) and extract it.
-2. In Chrome/Edge, go to `chrome://extensions`.
+2. Open `chrome://extensions`.
 3. Enable **Developer mode**.
 4. Click **Load unpacked** and select the project folder.
 5. Open Plex and use the extension.
+
+### Firefox (Temporary install)
+
+1. Download this repository (Code → Download ZIP) and extract it.
+2. Open `about:debugging#/runtime/this-firefox`.
+3. Click **Load Temporary Add-on**.
+4. Select the `manifest.json` file from the extracted folder.
+5. Open Plex and use the extension.
+
+> ⚠ Firefox unloads temporary extensions on restart — you'll need to reload it manually after each restart.
 
 ---
 
@@ -83,7 +93,7 @@ Until published in the store:
 - **Timer doesn’t start?** If your video is paused, the timer waits in “Waiting” state and auto-starts when playback begins.
 - **Skips not clicking?** Ensure **Skipper** is enabled in the popup. UI changes in Plex may occasionally move buttons; we try multiple selectors.
 - **No “Rules” chip?** Enable **Beta → Per-Show Rules** and open a show playback page; the chip appears in the top-right.
-- **Icons missing?** Verify icon paths in `manifest.json` or remove the `icons` entries temporarily.
+- **Manual skip button not working (Firefox only)?** If auto-skip is disabled for intros/outros, manual skip buttons may become unresponsive. This is a known limitation on Firefox.
 
 ---
 
@@ -96,7 +106,7 @@ Latest: **v1.3.0 (2025-11-08)** — rename to Plex Plus, Beta tab, Episode Guard
 
 ## 🤝 Contributing
 
-Issues and PRs are welcome. Please keep features **local-only** and respect the privacy first approach.
+Issues and PRs are welcome. Please keep features **local-only** and respect the privacy-first approach.
 
 ---
 
