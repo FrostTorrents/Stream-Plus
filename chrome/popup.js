@@ -227,3 +227,26 @@ function toast(msg) {
 
 // Stub so the file stays drop-in compatible if you had this function
 async function renderBingeCards() {}
+
+// --- Donate button handler (Square link) ---
+(() => {
+  const btn = document.getElementById("donateBtn");
+  if (!btn) return;
+
+  const url = btn.getAttribute("data-url") || "https://square.link/u/JZUUls2L";
+
+  btn.addEventListener("click", (e) => {
+    e.preventDefault();
+    try {
+      if (typeof chrome !== "undefined" && chrome?.tabs?.create) {
+        chrome.tabs.create({ url });
+      } else if (typeof browser !== "undefined" && browser?.tabs?.create) {
+        browser.tabs.create({ url });
+      } else {
+        window.open(url, "_blank", "noopener,noreferrer");
+      }
+    } catch (_) {
+      try { window.open(url, "_blank"); } catch(__) {}
+    }
+  });
+})();
