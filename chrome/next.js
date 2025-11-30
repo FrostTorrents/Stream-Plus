@@ -1,4 +1,8 @@
 // next.js — "Play Next / Next Episode" skipper (series-key aware; transport-safe + FORCE-REVEAL)
+// Plex-tuned:
+//   - Fast path: click [AudioVideoUpNext-poster] Play Next button when autoPlayCheck is checked
+//   - Generic path: only click elements whose OWN label mentions "next"
+//   - Never clicks playlist/context menus or transport controls
 
 (() => {
   if (window.__SMART_NEXT_SKIPPER__) return;
@@ -22,6 +26,22 @@
 
   // class names commonly used to hide elements
   const HIDE_CLASSES = ['hidden','opacity-0','invisible','sr-only','is-hidden','u-hidden','visually-hidden'];
+
+  // ----- menu / context guard -----
+  function isInMenuOrContext(el) {
+    return !!el.closest(
+      [
+        '[role="menu"]',
+        '[role="menuitem"]',
+        '.ContextMenu',
+        '.contextMenu',
+        '.Menu',
+        '.Dropdown',
+        '[data-testid*="menu"]',
+        '[data-qa-id*="menu"]'
+      ].join(',')
+    );
+  }
 
   // Public API
   window.initNextSkipper = function initNextSkipper(loadedSettings, currentSeries) {
@@ -104,9 +124,36 @@
     return p >= 0.80;
   }
 
+  // ----- PLEX FAST PATH: AudioVideoUpNext-poster Play Next button -----
+  function clickPlexUpNextIfPresent() {
+    const auto = document.getElementById('autoPlayCheck');
+    if (!auto || !(auto instanceof HTMLInputElement) || !auto.checked) return false;
+
+    const btn = document.querySelector(
+      '[class*="AudioVideoUpNext-poster"] button[aria-label="Play Next"][class*="AudioVideoUpNext-playButton"]'
+    );
+    if (!btn) return false;
+    if (isInMenuOrContext(btn) || isTransportElement(btn)) return false;
+    if (!isVisible(btn)) return false;
+
+    const now = Date.now();
+    if (now - lastClickTs < CLICK_COOLDOWN_MS) return true;
+    lastClickTs = now;
+
+    const target = resolveClickable(btn) || btn;
+    if (!target) return true;
+
+    simulatedClick(target);
+    log('✅ Clicked Plex Play Next (fast path)', { label: getElementLabel(target) });
+    return true;
+  }
+
   // ----- pass -----
   function tryClickOnce() {
     if (!isEnabledForSeries()) return;
+
+    // First: Plex-specific Up-Next button, if present
+    if (clickPlexUpNextIfPresent()) return;
 
     const cands = findNextCandidates();
     if (!cands.length) return;
@@ -182,29 +229,17 @@
     for (const el of deepQueryAllRoots([document], SELECTORS, 0, 8)) {
       if (!isElement(el)) continue;
       if (isTransportElement(el)) continue;
+      if (isInMenuOrContext(el)) continue; // <-- never menus/context
 
       const label = getElementLabel(el);
       if (TRANSPORT_LABEL_NEG.test(label)) continue;
       if (NEGATIVE_WORDS.test(label)) continue;
 
       const hasNext = NEXT_WORDS.test(label);
+      if (!hasNext) continue;   // <-- only things whose OWN label talks about "next"
+
       const overlayish = hasOverlayAncestry(el);
-
-      if ((late && overlayish) || hasNext) {
-        out.push({ el, score: scoreNextCandidate(el, label, late) });
-        continue;
-      }
-
-      const overlay = closestOverlay(el);
-      if (overlay) {
-        const overlayText = (overlay.textContent || '').replace(/\s+/g, ' ');
-        if (NEXT_WORDS.test(overlayText) && !NEGATIVE_WORDS.test(overlayText)) {
-          const clickDesc = overlay.querySelector('button,[role=button],a[role=button],*[onclick]');
-          if (clickDesc && !isTransportElement(clickDesc)) {
-            out.push({ el: clickDesc, score: scoreNextCandidate(clickDesc, overlayText, late) + 1 });
-          }
-        }
-      }
+      out.push({ el, score: scoreNextCandidate(el, label, late, overlayish) });
     }
 
     return out;
@@ -225,10 +260,10 @@
     ) || null;
   }
 
-  function scoreNextCandidate(el, label, late) {
+  function scoreNextCandidate(el, label, late, overlayish) {
     let s = 0;
     if (NEXT_WORDS.test(label)) s += 4;
-    if (hasOverlayAncestry(el)) s += 3;
+    if (overlayish) s += 3;
     if (late) s += 2;
     try {
       const r = el.getBoundingClientRect();
@@ -263,14 +298,13 @@
     if (isVisible(node)) return node;
     try {
       const btn = node.querySelector?.('button,[role=button],a[role=button],*[onclick]');
-      if (btn && isVisible(btn)) return btn;
+      if (btn && isVisible(btn) && !isInMenuOrContext(btn) && !isTransportElement(btn)) return btn;
     } catch {}
     return null;
   }
 
   function forceReveal(container, button) {
     const touched = [];
-    const HIDE_CLASSES = ['hidden','opacity-0','invisible','sr-only','is-hidden','u-hidden','visually-hidden'];
 
     const touch = (el, attrs) => {
       if (!el) return;
@@ -341,6 +375,7 @@
     let el = node;
     for (let i = 0; i < 8 && el; i++, el = el.parentElement) {
       if (!isElement(el)) continue;
+      if (isInMenuOrContext(el)) break;
       const tag = (el.tagName || '').toLowerCase();
       const role = (el.getAttribute?.('role') || '').toLowerCase();
       const style = getComputedStyle(el);
@@ -355,8 +390,8 @@
     }
     let desc;
     try { desc = node.querySelector?.('button,[role=button],a[role=button],*[onclick]'); } catch {}
-    if (desc && !isTransportElement(desc)) return desc;
-    return isElement(node) && !isTransportElement(node) ? node : null;
+    if (desc && !isTransportElement(desc) && !isInMenuOrContext(desc)) return desc;
+    return isElement(node) && !isTransportElement(node) && !isInMenuOrContext(node) ? node : null;
   }
 
   function simulatedClick(el) {
