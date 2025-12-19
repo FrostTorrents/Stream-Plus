@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Smart Skipper Options</title>
+  <style>
+    body { font-family: sans-serif; padding: 20px; max-width: 420px; }
+    h2 { margin-top: 0; }
+    label { display: flex; justify-content: space-between; margin: 12px 0; }
+    input[type="number"] { width: 80px; }
+    .section { margin-bottom: 20px; }
+    button { padding: 6px 12px; margin-top: 10px; }
+  </style>
+</head>
+<body>
+  <h2>Advanced Settings</h2>
+
+  <div class="section">
+    <label><span>🕒 Skip Delay (ms)</span><input type="number" id="skipDelayMs" min="0"></label>
+    <label><span>🔊 Volume Level (%)</span><input type="number" id="volumeLevel" min="0" max="100"></label>
+    <label><span>🔇 Mute Instead of Pause</span><input type="checkbox" id="muteInsteadOfPause"></label>
+    <label><span>🌑 Dim Screen on Timeout</span><input type="checkbox" id="dimScreen"></label>
+    <label><span>⏱ Show Countdown</span><input type="checkbox" id="countdownVisible"></label>
+  </div>
+
+  <button id="saveBtn">💾 Save Settings</button>
+  <p id="status" style="color: green;"></p>
+
+  <script>
+    document.addEventListener('DOMContentLoaded', () => {
+      loadSettings();
+      document.getElementById('saveBtn').addEventListener('click', saveSettings);
+    });
+
+    function loadSettings() {
+      chrome.storage.sync.get([
+        'skipDelayMs','volumeLevel','muteInsteadOfPause','dimScreen','countdownVisible'
+      ], (data) => {
+        document.getElementById('skipDelayMs').value = data.skipDelayMs ?? 500;
+        document.getElementById('volumeLevel').value = data.volumeLevel ?? 50;
+        document.getElementById('muteInsteadOfPause').checked = !!data.muteInsteadOfPause;
+        document.getElementById('dimScreen').checked = !!data.dimScreen;
+        document.getElementById('countdownVisible').checked = !!data.countdownVisible;
+      });
+    }
+
+    function saveSettings() {
+      const payload = {
+        skipDelayMs: parseInt(document.getElementById('skipDelayMs').value, 10),
+        volumeLevel: parseInt(document.getElementById('volumeLevel').value, 10),
+        muteInsteadOfPause: document.getElementById('muteInsteadOfPause').checked,
+        dimScreen: document.getElementById('dimScreen').checked,
+        countdownVisible: document.getElementById('countdownVisible').checked
+      };
+      chrome.storage.sync.set(payload, () => {
+        const status = document.getElementById('status');
+        status.textContent = '✅ Saved!';
+        setTimeout(() => status.textContent = '', 1800);
+      });
+    }
+  </script>
+</body>
+</html>

@@ -683,7 +683,6 @@ function startFadeVolume() {
 /* -------------------- Timer end behavior -------------------- */
 
 function handleTimerEnd() {
-  if (settings?.globalEnabled === false) return;
   const video = getVideo();
   if (video) {
     if (settings.muteInsteadOfPause) video.muted = true;

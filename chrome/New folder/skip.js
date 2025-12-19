@@ -103,7 +103,6 @@
   }
 
   function trySkipOnce() {
-    if (settings?.globalEnabled === false) return;
     const r = getSeriesRules();
     if (!r?.skipIntro) return;
 

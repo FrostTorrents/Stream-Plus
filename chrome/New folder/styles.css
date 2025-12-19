@@ -1,0 +1,6 @@
+/* styles.css – optional polish for overlay and dim state */
+
+body.dimmed, html.dimmed {
+  filter: brightness(30%) !important;
+  transition: filter 1s ease;
+}

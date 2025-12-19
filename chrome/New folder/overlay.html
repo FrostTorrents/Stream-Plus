@@ -1,0 +1,25 @@
+<!-- overlay.html — fragment template (no scripts; logic is in content.js) -->
+<div id="overlay" style="
+  position: fixed;
+  bottom: 20px;
+  left: 20px;
+  background: rgba(30, 30, 30, 0.9);
+  color: #fff;
+  padding: 6px 10px;
+  font-size: 14px;
+  border-radius: 12px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  z-index: 2147483646;
+  cursor: move;
+  user-select: none;">
+  <span style="opacity:.5;margin-right:6px;cursor:grab;">⠿</span>
+  <button data-add="15">+15m</button>
+  <button data-add="30">+30m</button>
+  <button data-add="60">+60m</button>
+  <button data-sub="10">−10m</button>
+  <button id="cancelTimer">✖</button>
+  <span id="timerDisplay" style="margin-left:auto;font-weight:700;font-variant-numeric:tabular-nums">⏳ 0:00</span>
+</div>

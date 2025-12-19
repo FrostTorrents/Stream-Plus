@@ -169,36 +169,6 @@ async function resolvePlexSeriesViaTab(){ try{ const tabs=await queryTabs('*://*
 function queryTabs(url){ return new Promise(r => chrome.tabs.query({url}, r)); }
 function execInTab(tabId, func){ return new Promise(r => chrome.scripting.executeScript({target:{tabId}, func}, res => r(res?.[0]?.result || null))); }
 
-
-
-/* ---------- Send actions to the Plex tab ---------- */
-async function sendToActiveTab(message){
-  try {
-    // Prefer the currently-active tab in this window if it's Plex
-    const activeTabs = await new Promise(r => chrome.tabs.query({ active: true, currentWindow: true }, r));
-    let tab = activeTabs && activeTabs[0];
-
-    const isPlex = (t) => !!(t && typeof t.url === 'string' && /:\/\/.*\.plex\.tv\//i.test(t.url));
-    if (!isPlex(tab)) {
-      const plexTabs = await queryTabs('*://*.plex.tv/*');
-      if (!plexTabs || !plexTabs.length) return;
-      tab = plexTabs.find(t => t.active) || plexTabs[0];
-    }
-    if (!tab?.id) return;
-
-    await new Promise(resolve => {
-      // IMPORTANT: Plex uses iframes; our overlay/timer lives in the top frame.
-      chrome.tabs.sendMessage(tab.id, message, { frameId: 0 }, () => {
-        // Swallow "no receiver" errors (content script not ready / not on Plex player page)
-        void chrome.runtime.lastError;
-        resolve();
-      });
-    });
-  } catch (e) {
-    console.warn('[Popup] sendToActiveTab failed', e);
-  }
-}
-
 /* ---------- Tiny DOM ---------- */
 function $(id){return document.getElementById(id)}
 function setText(id,v){$(id).textContent=v}

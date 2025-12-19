@@ -8,6 +8,9 @@
   let seriesTitle = '';
   let mo = null;
   let pollTimer = null;
+  let loweredVolume = false;
+  let savedVolume = null;
+
 
   const POLL_MS = 250;
   const CLICK_COOLDOWN_MS = 300;
@@ -103,7 +106,32 @@
     return r;
   }
 
-  function getPhase() {
+  
+  function clamp01(n) { return Math.max(0, Math.min(1, n)); }
+
+  function handleCreditsVolume(phase, rules) {
+    // Only lower during credits when the per-show rule is enabled
+    const shouldLower = !!(rules?.lowerVolume) && phase === 'credits' && settings?.globalEnabled !== false;
+    const v = document.querySelector('video');
+    if (!v) return;
+
+    const levelPct = Number.isFinite(settings?.volumeLevel) ? settings.volumeLevel : 50;
+    const target = clamp01(levelPct / 100);
+
+    if (shouldLower) {
+      if (!loweredVolume) {
+        savedVolume = Number.isFinite(v.volume) ? v.volume : 1;
+        loweredVolume = true;
+      }
+      try { v.volume = Math.min(savedVolume ?? v.volume, target); } catch {}
+    } else if (loweredVolume) {
+      try { if (savedVolume != null) v.volume = savedVolume; } catch {}
+      loweredVolume = false;
+      savedVolume = null;
+    }
+  }
+
+function getPhase() {
     const v = document.querySelector('video');
     if (!v || !Number.isFinite(v.duration) || v.duration <= 0) {
       return { p: 0, phase: 'unknown' };
@@ -114,10 +142,14 @@
   }
 
   function trySkipOnce() {
+    if (settings?.globalEnabled === false) { handleCreditsVolume('unknown', { lowerVolume: false }); return; }
     const r = getSeriesRules();
-    if (!r?.skipCredits) return;
 
     const { phase } = getPhase();
+    handleCreditsVolume(phase, r);
+
+    if (!r?.skipCredits) return;
+
     const cands = findCreditsCandidates(phase);
     if (!cands.length) return;
 
