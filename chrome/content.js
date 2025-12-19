@@ -1,722 +1,1429 @@
-// content.js — overlay + sleep timer + skipper bootstrap + series key publisher
-// • Player-context gate: no automation on playlist/library pages
-// • All chrome.runtime calls guarded (prevents "Extension context invalidated" errors)
-// • Overlay is draggable + resizable with persisted position/size/opacity
-// • Timer only counts down while the video is playing (auto-pauses/resumes with playback)
+// content.js — Stream Plus (redesign v5)
+// Single content script: overlay + sleep timer + skippers + beta helpers.
+// Runs in all frames, but only activates automations when a <video> is present.
 
-let settings = {};
-let currentSeriesTitle = '';
-let fadeInterval = null;
-let originalVolume = 1;
-let remainingSeconds = 0;
-let timerInterval = null;       // ticking loop
-let timerSuspended = false;     // true when video is paused/ended
-let videoEventsBound = false;   // ensure we bind once
-let playerContext = false;      // true only when we detect a real player
+(() => {
+  if (window.__STREAM_PLUS_V5__) return;
+  window.__STREAM_PLUS_V5__ = true;
 
-const fadeVolumeStep = 5; // 5% every 30s in final minutes
-const IS_TOP = window.top === window;
+  const IS_TOP = window.top === window;
+  const STORAGE_KEYS = [
+    "perShowRules",
+    "globalEnabled",
+    "skipDelayMs",
+    "volumeLevel",
+    "muteInsteadOfPause",
+    "dimScreen",
+    "countdownVisible",
+    "episodeGuard",
+    "beta"
+  ];
 
-/* -------------------- Runtime guards -------------------- */
-function safeRuntime() {
-  return typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.id;
-}
-function safeSendMessage(msg) {
-  return new Promise((resolve) => {
-    if (!safeRuntime()) return resolve(undefined);
-    try {
-      chrome.runtime.sendMessage(msg, (res) => resolve(res));
-    } catch (_) {
-      resolve(undefined);
-    }
-  });
-}
-function safeGetURL(path) {
-  if (!safeRuntime()) return null;
-  try { return chrome.runtime.getURL(path); } catch (_) { return null; }
-}
-
-/* -------------------- Boot -------------------- */
-(async function init() {
-  settings = await getSettings();
-
-  // Decide initial context
-  playerContext = detectPlayerContext();
-
-  if (IS_TOP) {
-    currentSeriesTitle = resolveSeriesTitle();
-    publishActiveSeries(currentSeriesTitle);
-
-    if (settings.countdownVisible) {
-      await ensureOverlayVisible();
-    }
-
-    // Always watch for video presence (auto-start when it appears)
-    watchVideoPresence();
-
-    // Wire to current <video> (and any future swaps)
-    bindVideoEventsOnce();
-
-    handleEpisodeGuard();
-
-    // Start skippers only if we're in player right now (watcher will catch later cases)
-    if (playerContext) startSkippersWhenReady();
-
-    watchSeriesChanges();
-    watchRouteChanges(); // update playerContext as SPA hash/route changes
-  } else {
-    // Iframe: resolve series + start skippers as soon as we see a video
-    currentSeriesTitle = (await waitForActiveSeriesTitle(60, 200)) || 'Unknown Series';
-
-    // Watch for video presence in the iframe (more reliable than route checks)
-    watchVideoPresence();
-
-    // If a video is already here, bind & start now
-    if (detectPlayerContext()) {
-      bindVideoEventsOnce();
-      startSkippersWhenReady();
-    }
-  }
-
-  // Popup -> content control (ensure overlay is visible first for timer ops)
-  if (safeRuntime()) {
-    try {
-      chrome.runtime.onMessage.addListener((msg) => {
-        if (!IS_TOP) return; // overlay lives in top frame
-        if (!msg?.type) return;
-
-        if (msg.type === 'overlay:toggle') {
-          if (msg.show) ensureOverlayVisible();
-          else removeOverlay();
-        } else if (msg.type === 'timer:add') {
-          ensureOverlayVisible().then(() => startOrExtendTimer((Number(msg.minutes) || 0) * 60));
-        } else if (msg.type === 'timer:sub') {
-          ensureOverlayVisible().then(() => {
-            remainingSeconds = Math.max(0, remainingSeconds - ((Number(msg.minutes) || 10) * 60));
-            updateDisplay();
-          });
-        } else if (msg.type === 'timer:cancel') {
-          ensureOverlayVisible().then(() => stopTimer());
-        }
-      });
-    } catch (_) { /* ignore */ }
-  }
-
-  // Storage changes (defensive)
-  if (safeRuntime()) {
-    try {
-      chrome.storage.onChanged.addListener((changes, area) => {
-        if (area !== 'sync') return;
-        Object.keys(changes).forEach(k => (settings[k] = changes[k].newValue));
-
-        if (IS_TOP && Object.prototype.hasOwnProperty.call(changes, 'countdownVisible')) {
-          changes.countdownVisible.newValue ? ensureOverlayVisible() : removeOverlay();
-        }
-
-        // Only forward into skippers in real player contexts
-        if (!playerContext) return;
-        if (typeof window.updateSkipperSettings === 'function') window.updateSkipperSettings(settings, currentSeriesTitle);
-        if (typeof window.updateOutroSettings === 'function') window.updateOutroSettings(settings, currentSeriesTitle);
-        if (typeof window.updateNextSettings === 'function') window.updateNextSettings(settings, currentSeriesTitle);
-      });
-    } catch (_) { /* ignore */ }
-  }
-
-  // Pause timer when tab not visible (extra safety)
-  document.addEventListener('visibilitychange', () => {
-    timerSuspended = (document.visibilityState !== 'visible') || !isVideoPlaying();
-  });
-})();
-
-/* -------------------- Context / route detection -------------------- */
-
-function detectPlayerContext() {
-  // In IFRAMEs: if there's a <video>, that *is* the player context.
-  if (!IS_TOP) {
-    return !!document.querySelector('video');
-  }
-
-  // In TOP: be a bit cautious but not blocking.
-  const hasVideo = !!document.querySelector('video');
-
-  // Common player chrome selectors
-  const hasControls =
-    document.querySelector('[data-testid="player"]') ||
-    document.querySelector('.PlayerControls-container') ||
-    document.querySelector('[class*="PlayerControls"]') ||
-    document.querySelector('button[aria-label="Play"],button[aria-label="Pause"]');
-
-  // Hash-based hints (Plex SPA routes vary, include more variants)
-  const hash = (location.hash || '').toLowerCase();
-  const looksLikePlayerRoute =
-    hash.includes('/player') ||
-    hash.includes('/watch') ||
-    hash.includes('/media/') ||      // when navigating directly to media
-    hash.includes('/playback');      // some skins
-
-  // TOP frame: allow if video exists OR route strongly suggests player
-  return !!(hasVideo || looksLikePlayerRoute || hasControls);
-}
-
-function watchVideoPresence() {
-  // Start skippers immediately if a <video> is present
-  const tryStart = () => {
-    const hasVid = !!document.querySelector('video');
-    const was = playerContext;
-    playerContext = detectPlayerContext();
-
-    if (hasVid && playerContext) {
-      // (Re)bind video listeners and (re)start skippers
-      bindVideoEventsOnce();
-      startSkippersWhenReady();
-    }
-
-    // Debug logs for diagnosis
-    if (was !== playerContext) {
-      console.debug('[SmartSkipper] playerContext changed →', playerContext, { IS_TOP, hasVid });
+  const DEFAULTS = {
+    perShowRules: {},
+    globalEnabled: true,
+    skipDelayMs: 500,
+    volumeLevel: 50,
+    muteInsteadOfPause: false,
+    dimScreen: true,
+    countdownVisible: false,
+    episodeGuard: { enabled: false, maxEpisodes: 3, watchedCount: 0, lastWatched: null },
+    beta: {
+      enabled: false,
+      wakeLock: false,
+      pauseOnHidden: false,
+      pauseOnHiddenSec: 10,
+      autoFullscreen: false,
+      autoStartTimerOnPlay: false,
+      autoStartTimerMinutes: 30,
+      fadeBeforeTimerEnd: true,
+      fadeSeconds: 20,
+      rememberSpeed: true,
+      defaultSpeed: 1.0,
+      subtitlesDefault: "auto", // auto | on | off
+      autoContinueWatching: true
     }
   };
 
-  // Initial attempt
-  tryStart();
+  const state = {
+    settings: (typeof structuredClone==='function' ? structuredClone(DEFAULTS) : JSON.parse(JSON.stringify(DEFAULTS))),
 
-  // Observe DOM for a new <video>
-  const mo = new MutationObserver(() => {
-    if (document.querySelector('video')) {
-      tryStart();
-    }
-  });
-  mo.observe(document.body || document.documentElement, { childList: true, subtree: true });
+    // series
+    seriesKey: "unknown",
+    seriesTitle: "Unknown",
 
-  // Also poll a bit (Plex sometimes swaps deep inside shadow roots)
-  const poll = setInterval(() => {
-    tryStart();
-  }, 1200);
+    // timer
+    remainingSec: 0,
+    timerRunning: false,
+    timerSuspended: false,
+    lastTickMs: 0,
 
-  // Stop polling if we stayed in player context for a while
-  setTimeout(() => clearInterval(poll), 30000);
-}
+    // fade
+    fadeActive: false,
+    fadeStartVolume: 1,
 
-function watchRouteChanges() {
-  let lastHash = location.hash;
-  const check = () => {
-    if (location.hash !== lastHash) {
-      lastHash = location.hash;
-      const was = playerContext;
-      playerContext = detectPlayerContext();
-      if (was !== playerContext) {
-        if (playerContext) {
-          // We entered a player: bind (again) and start skippers if needed
-          bindVideoEventsOnce();
-          startSkippersWhenReady();
-        } else {
-          // We left the player: stop timer clicking + don't invoke skippers
-          // (Skipper modules should also check playerContext guards if they run.)
-        }
-      }
-    }
+    // overlay
+    overlayHost: null,
+    overlayShadow: null,
+    overlayVisible: false,
+    overlayMin: false,
+    overlayScale: 1.0,
+
+    // playback
+    wakeLock: null,
+    hasAppliedSpeed: false,
+    hasAutoStartedTimerThisSession: false,
+    hiddenPauseTimer: null
   };
-  window.addEventListener('hashchange', check);
-  // Plex is SPA; also poll a bit in case it manipulates history
-  setInterval(check, 1000);
-}
 
-/* -------------------- Skippers (only in player) -------------------- */
-
-function startSkippersWhenReady() {
-  if (!playerContext) return; // hard gate
-
-  waitFor(() => typeof window.initSkipper === 'function', 40, 120)
-    .then(ok => {
-      if (ok) {
-        console.debug('[SmartSkipper] initSkipper →', { frame: IS_TOP ? 'top' : 'iframe', series: currentSeriesTitle });
-        window.initSkipper(settings, currentSeriesTitle);
-      }
-    });
-
-  waitFor(() => typeof window.initOutroSkipper === 'function', 40, 120)
-    .then(ok => {
-      if (ok) {
-        console.debug('[SmartSkipper] initOutroSkipper →', { frame: IS_TOP ? 'top' : 'iframe', series: currentSeriesTitle });
-        window.initOutroSkipper(settings, currentSeriesTitle);
-      }
-    });
-
-  waitFor(() => typeof window.initNextSkipper === 'function', 40, 120)
-    .then(ok => {
-      if (ok) {
-        console.debug('[SmartSkipper] initNextSkipper →', { frame: IS_TOP ? 'top' : 'iframe', series: currentSeriesTitle });
-        window.initNextSkipper(settings, currentSeriesTitle);
-      }
-    });
-}
-
-function waitFor(predicate, retries = 30, delay = 150) {
-  return new Promise(resolve => {
-    const t = setInterval(() => {
-      if (predicate()) { clearInterval(t); resolve(true); }
-      else if (--retries <= 0) { clearInterval(t); resolve(false); }
-    }, delay);
-  });
-}
-
-async function waitForActiveSeriesTitle(retries = 60, delay = 200) {
-  for (let i = 0; i < retries; i++) {
-    const v = await readActiveSeriesFromLocal();
-    if (v) return v;
-    await new Promise(r => setTimeout(r, delay));
+  /* -------------------- runtime guards -------------------- */
+  function safeRuntime() {
+    return typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.id;
   }
-  return null;
-}
+  function getSync(keys) {
+    return new Promise((resolve) => {
+      if (!safeRuntime()) return resolve({});
+      try { chrome.storage.sync.get(keys, resolve); } catch { resolve({}); }
+    });
+  }
+  function setSync(obj) {
+    return new Promise((resolve) => {
+      if (!safeRuntime()) return resolve();
+      try { chrome.storage.sync.set(obj, resolve); } catch { resolve(); }
+    });
+  }
+  function setLocal(obj) {
+    return new Promise((resolve) => {
+      if (!safeRuntime()) return resolve();
+      try { chrome.storage.local.set(obj, resolve); } catch { resolve(); }
+    });
+  }
 
-/* -------------------- Frame/series helpers -------------------- */
+  /* -------------------- utils -------------------- */
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const clamp = (n, a, b) => Math.max(a, Math.min(b, n));
 
-function readActiveSeriesFromLocal() {
-  return new Promise(resolve => {
-    if (!safeRuntime()) return resolve(null);
-    chrome.storage.local.get(['activeSeriesTitle'], ({ activeSeriesTitle }) => resolve(activeSeriesTitle || null));
-  });
-}
+  function isVisible(el) {
+    if (!el) return false;
+    const rect = el.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0 && rect.bottom >= 0 && rect.right >= 0 &&
+      rect.top <= (window.innerHeight || document.documentElement.clientHeight) &&
+      rect.left <= (window.innerWidth || document.documentElement.clientWidth) &&
+      getComputedStyle(el).visibility !== "hidden" &&
+      getComputedStyle(el).display !== "none" &&
+      getComputedStyle(el).opacity !== "0";
+  }
 
-function publishActiveSeries(title) {
-  const canonical = canonicalizeSeriesTitle(title);
-  const key = normalizeTitle(canonical);
-  if (!safeRuntime()) return;
-  try {
-    chrome.storage.local.set({ activeSeriesTitle: canonical, activeSeriesKey: key, activeSeriesUpdatedAt: Date.now() });
-  } catch (_) { /* ignore */ }
-}
-
-function normalizeTitle(s) {
-  return (s || '').toLowerCase().replace(/\s+/g, ' ').replace(/[^\p{L}\p{N}\s]+/gu, '').trim();
-}
-
-function canonicalizeSeriesTitle(s) {
-  let t = (s || '').trim();
-  t = t.replace(/\s*[-–—]\s*S\d+\s*[·x×]?\s*E\d+\s*$/i, '');
-  t = t.replace(/\s*\(\s*S\d+\s*[·x×]?\s*E\d+\s*\)\s*$/i, '');
-  t = t.replace(/\s*\bS(?:eason)?\s*\d+\s*[·x×.]?\s*E(?:pisode)?\s*\d+\b.*$/i, '');
-  t = t.replace(/\s*\bS\d+\s*E\d+\b.*$/i, '');
-  t = t.replace(/\s*[-–—]\s*Season\s*\d+\s*Episode\s*\d+\s*$/i, '');
-  t = t.replace(/\s*\bSeason\s*\d+\s*Episode\s*\d+\b.*$/i, '');
-  return t.trim();
-}
-
-function watchSeriesChanges() {
-  let last = currentSeriesTitle;
-  const check = () => {
-    const now = resolveSeriesTitle();
-    if (now && now !== last) {
-      last = now;
-      currentSeriesTitle = now;
-      publishActiveSeries(now);
-      if (!playerContext) return;
-      if (typeof window.updateSkipperSettings === 'function') window.updateSkipperSettings(settings, currentSeriesTitle);
-      if (typeof window.updateOutroSettings === 'function') window.updateOutroSettings(settings, currentSeriesTitle);
-      if (typeof window.updateNextSettings === 'function') window.updateNextSettings(settings, currentSeriesTitle);
+  function parseSeriesKeyFromUrl() {
+    // Plex often encodes the library key in the hash, e.g. key=%2Flibrary%2Fmetadata%2F12345
+    const raw = location.href + " " + location.hash;
+    const m1 = raw.match(/key=([^&\s]+)/i);
+    if (m1) {
+      try {
+        const decoded = decodeURIComponent(m1[1]);
+        const mId = decoded.match(/\/library\/metadata\/(\d+)/);
+        if (mId) return `meta:${mId[1]}`;
+        return `key:${decoded}`;
+      } catch {
+        return `key:${m1[1]}`;
+      }
     }
-  };
-  const mo = new MutationObserver(check);
-  mo.observe(document, { childList: true, subtree: true });
-  setInterval(check, 1500);
-}
+    const m2 = raw.match(/\/library\/metadata\/(\d+)/);
+    if (m2) return `meta:${m2[1]}`;
+    return "unknown";
+  }
 
-function getSettings() {
-  return safeSendMessage({ type: 'getSettings' }).then(v => v || {});
-}
-
-function resolveSeriesTitle() {
-  const el =
-    document.querySelector('[data-qa-id="metadataGrandparentTitle"]') ||
-    document.querySelector('[data-testid="metadataGrandparentTitle"]') ||
-    document.querySelector('.PrePlayTitle .grandparent-title') ||
-    document.querySelector('[data-testid="metadata-title"]');
-  let raw = el?.textContent?.trim();
-  if (!raw || raw.length < 2) raw = (document.title || '').replace(/\s+-\s*Plex.*/i, '').trim();
-  return canonicalizeSeriesTitle(raw || 'Unknown Series');
-}
-
-/* -------------------- Video helpers (drive timer with playback) -------------------- */
-
-function getVideo() {
-  return document.querySelector('video');
-}
-
-function isVideoPlaying() {
-  const v = getVideo();
-  return !!(v && !v.paused && !v.ended && v.readyState > 2);
-}
-
-function bindVideoEventsOnce() {
-  if (videoEventsBound) return;
-  const v = getVideo();
-  if (!v) return;
-
-  videoEventsBound = true;
-  v.addEventListener('play', onVideoPlay, { passive: true });
-  v.addEventListener('pause', onVideoPause, { passive: true });
-  v.addEventListener('ended', onVideoEnded, { passive: true });
-
-  // Re-bind if Plex swaps the <video>
-  const mo = new MutationObserver(() => {
-    const nv = getVideo();
-    if (nv && !nv.__spBound) {
-      nv.__spBound = true;
-      nv.addEventListener('play', onVideoPlay, { passive: true });
-      nv.addEventListener('pause', onVideoPause, { passive: true });
-      nv.addEventListener('ended', onVideoEnded, { passive: true });
+  function inferSeriesTitle() {
+    // Best-effort: Plex player often sets document.title to "Episode • Series — Plex"
+    const t = (document.title || "").trim();
+    if (!t) return "Unknown";
+    // try to pull "Series — Plex"
+    const parts = t.split("—").map(s => s.trim());
+    if (parts.length >= 2) {
+      const left = parts[0];
+      // left might be "S1:E1 • Series"
+      const p2 = left.split("•").map(s => s.trim());
+      if (p2.length >= 2) return p2[p2.length - 1];
+      return left;
     }
-  });
-  mo.observe(document.body || document.documentElement, { childList: true, subtree: true });
-}
+    return t.slice(0, 80);
+  }
 
-function onVideoPlay() {
-  timerSuspended = false;
-  if (remainingSeconds > 0 && !timerInterval) startOrExtendTimer(0);
-}
+  function currentRules() {
+    const per = state.settings.perShowRules || {};
+    const key = state.seriesKey || "unknown";
+    const r = per[key] || {};
+    return {
+      skipIntro: r.skipIntro ?? true,
+      skipCredits: r.skipCredits ?? true,
+      nextEpisode: r.nextEpisode ?? true,
+      // future: skipRecap separate if needed
+    };
+  }
 
-function onVideoPause() {
-  timerSuspended = true;
-}
+  /* -------------------- video selection -------------------- */
+  function getVideo() {
+    const vids = Array.from(document.querySelectorAll("video"));
+    if (!vids.length) return null;
 
-function onVideoEnded() {
-  timerSuspended = true;
-  // Optional: stopTimer();
-}
+    // prefer the largest visible playing video
+    let best = null;
+    let bestScore = -1;
+    for (const v of vids) {
+      const rect = v.getBoundingClientRect();
+      const area = rect.width * rect.height;
+      const score = (isVisible(v) ? 1 : 0) * 1_000_000 + area + (v.paused ? 0 : 10_000);
+      if (score > bestScore) { best = v; bestScore = score; }
+    }
+    return best;
+  }
 
-/* -------------------- Overlay + Timer -------------------- */
 
-async function ensureOverlayVisible() {
-  let overlay = document.getElementById('overlay');
-  if (!overlay) {
-    await injectOverlay();
-    overlay = document.getElementById('overlay');
+  function isLikelyPlayerContext() {
+    // We want Smart Next to work even when <video> temporarily disappears (post-play / up-next screen),
+    // but we still avoid scanning on library/home pages.
+    try {
+      return !!document.querySelector(
+        'video, [class*="FullPlayer"], [class*="AudioVideo"], [class*="UpNext"], [class*="Autoplay"], [class*="Postplay"], [data-testid*="player" i], [data-qa-id*="player" i]'
+      );
+    } catch {
+      return false;
+    }
+  }
+
+  function isPlaying(v) {
+    return !!(v && !v.paused && !v.ended && v.readyState >= 2);
+  }
+
+  /* -------------------- overlay (shadow DOM) -------------------- */
+  function overlayCSS() {
+    return `
+      :host{ all: initial; }
+      .wrap{
+        position: fixed;
+        left: var(--x, 18px);
+        bottom: var(--y, 18px);
+        z-index: 2147483647;
+        font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial;
+        color: rgba(255,255,255,.92);
+        user-select: none;
+        -webkit-user-select: none;
+        pointer-events: auto;
+        transform: scale(var(--scale, 1));
+        transform-origin: left bottom;
+      }
+      .card{
+        position: relative;
+        pointer-events: auto;
+        display:flex;
+        align-items:center;
+        gap:10px;
+        padding:10px 12px;
+        border-radius: 16px;
+        background: rgba(12, 18, 30, 0.55);
+        border: 1px solid rgba(255,255,255,.12);
+        box-shadow: 0 10px 30px rgba(0,0,0,.35);
+        backdrop-filter: blur(14px);
+      }
+      .min .card{ padding:8px 10px; border-radius: 999px; gap:8px; }
+      .left{ display:flex; align-items:center; gap:10px; }
+      .ring{
+        width: 30px; height: 30px; border-radius: 999px;
+        background: conic-gradient(from 180deg, rgba(59,130,246,.95) var(--p, 0%), rgba(255,255,255,.12) 0);
+        display:grid; place-items:center;
+      }
+      .ring:after{
+        content:"";
+        width: 22px; height: 22px; border-radius: 999px;
+        background: rgba(12, 18, 30, 0.78);
+        border: 1px solid rgba(255,255,255,.10);
+      }
+      .time{
+        font-weight: 800;
+        letter-spacing: .2px;
+        font-size: 13px;
+        line-height: 1.1;
+      }
+      .sub{
+        font-size: 11px;
+        color: rgba(255,255,255,.68);
+        margin-top: 2px;
+      }
+      .stack{ display:flex; flex-direction:column; }
+      .pill{
+        display:inline-flex; align-items:center; gap:6px;
+        padding: 6px 8px;
+        border-radius: 999px;
+        border: 1px solid rgba(255,255,255,.14);
+        background: rgba(255,255,255,.06);
+      }
+      button{
+        all: unset;
+        cursor: pointer;
+        padding: 6px 8px;
+        border-radius: 10px;
+        border: 1px solid rgba(255,255,255,.12);
+        background: rgba(255,255,255,.06);
+        color: rgba(255,255,255,.92);
+        font-size: 12px;
+        font-weight: 700;
+      }
+      button:hover{ background: rgba(255,255,255,.10); }
+      button:active{ transform: translateY(0.5px); }
+      .danger{ border-color: rgba(239,68,68,.35); }
+      .ghost{ background: transparent; }
+      .btnrow{ display:flex; gap:8px; align-items:center; }
+      .divider{ width:1px; height:26px; background: rgba(255,255,255,.12); margin: 0 2px; }
+      .grip{
+        width: 16px;
+        height: 26px;
+        border-radius: 10px;
+        background: rgba(255,255,255,.08);
+        border: 1px solid rgba(255,255,255,.12);
+        display:grid;
+        place-items:center;
+        cursor: grab;
+      }
+      .grip:active{ cursor: grabbing; }
+      .dots{
+        width: 10px; height: 14px;
+        background:
+          radial-gradient(circle, rgba(255,255,255,.65) 1px, transparent 2px) 0 0/5px 5px;
+        opacity: .8;
+      }
+      .min .btnrow, .min .sub, .min .divider{ display:none; }
+      .min .ring{ width: 22px; height:22px; }
+      .min .ring:after{ width: 16px; height:16px; }
+
+      .right{ display:flex; flex-direction:column; gap:6px; }
+      .pill.tiny{ padding: 6px 7px; font-size: 11px; min-width: 34px; justify-content:center; }
+      .resize{
+        position:absolute;
+        right: 10px;
+        bottom: 10px;
+        width: 14px;
+        height: 14px;
+        border-radius: 4px;
+        background: rgba(255,255,255,.10);
+        border: 1px solid rgba(255,255,255,.14);
+        cursor: nwse-resize;
+        pointer-events:auto;
+      }
+      .resize:before{
+        content:"";
+        position:absolute;
+        right:3px; bottom:3px;
+        width:7px; height:7px;
+        border-right:2px solid rgba(255,255,255,.55);
+        border-bottom:2px solid rgba(255,255,255,.55);
+        opacity:.75;
+      }
+      .min .right{ display:flex; }
+      .min #spSizeDown, .min #spSizeUp{ display:none; }
+    `;
+  }
+
+  function ensureOverlay() {
+    if (state.overlayHost) return;
+
+    const host = document.createElement("div");
+    host.id = "sp-overlay-host";
+    // keep host in DOM even when "hidden" to preserve drag state; we toggle display on wrapper
+    host.style.position = "fixed";
+    host.style.inset = "0";
+    host.style.pointerEvents = "none";
+    host.style.zIndex = "2147483647";
+
+    const shadow = host.attachShadow({ mode: "open" });
+    const style = document.createElement("style");
+    style.textContent = overlayCSS();
+
+    const wrap = document.createElement("div");
+    wrap.className = "wrap";
+    wrap.style.setProperty("--scale", String(state.overlayScale || 1));
+    wrap.innerHTML = `
+      <div class="card">
+        <div class="grip" id="spGrip" title="Drag"><div class="dots"></div></div>
+        <div class="left">
+          <div class="ring" id="spRing"></div>
+          <div class="stack">
+            <div class="time" id="spTime">—</div>
+            <div class="sub" id="spSub">Sleep Timer</div>
+          </div>
+        </div>
+
+        <div class="divider"></div>
+
+        <div class="btnrow">
+          <button id="spAdd15">+15</button>
+          <button id="spAdd30">+30</button>
+          <button id="spAdd60">+60</button>
+          <button id="spSub10">−10</button>
+          <button id="spCancel" class="danger">Cancel</button>
+        </div>
+
+        <div class="divider"></div>
+
+        <div class="btnrow">
+          <button id="spSkipIntro" class="ghost">Intro</button>
+          <button id="spSkipCredits" class="ghost">Credits</button>
+          <button id="spNext" class="ghost">Next</button>
+        </div>
+
+        <div class="divider"></div>
+
+        <div class="right">
+          <button id="spSizeDown" class="pill tiny" title="Smaller">A−</button>
+          <button id="spSizeUp" class="pill tiny" title="Larger">A+</button>
+          <button id="spMin" class="pill tiny" title="Minimize">▾</button>
+        </div>
+
+        <div id="spResize" class="resize" title="Resize"></div>
+      </div>
+    `;
+
+    shadow.appendChild(style);
+    shadow.appendChild(wrap);
+    document.documentElement.appendChild(host);
+
+    state.overlayHost = host;
+    state.overlayShadow = shadow;
+
     bindOverlayControls();
+    restoreOverlayPos();
+    renderOverlay();
   }
-  if (overlay) overlay.style.display = 'inline-flex';
-  return overlay;
-}
 
-function removeOverlay() {
-  const overlay = document.getElementById('overlay');
-  if (overlay) overlay.remove();
-  stopTimer();
-}
+  function setOverlayVisible(visible) {
+    // Preference is stored in sync; this only controls whether we render it in this frame.
+    const wants = !!visible;
+    state.overlayVisible = wants;
 
-async function injectOverlay() {
-  try {
-    const url = safeGetURL('overlay.html');
-    if (!url) return;
-    const res = await fetch(url);
-    const html = await res.text();
-    const doc = new DOMParser().parseFromString(html, 'text/html');
-    const overlayTemplate = doc.querySelector('#overlay');
-    if (!overlayTemplate) return;
+    // Only show overlay when a video is present (prevents overlay on Plex home/library pages).
+    if (wants && !getVideo()) return;
 
-    const overlay = overlayTemplate.cloneNode(true);
-    overlay.id = 'overlay';
-    overlay.style.position = 'fixed';
-    overlay.style.zIndex = '2147483647';
-    overlay.style.display = 'inline-flex';
-    overlay.style.alignItems = 'center';
-    overlay.style.transformOrigin = 'left top';
-    overlay.style.maxWidth = 'calc(100vw - 16px)';
-    overlay.style.maxHeight = '96px';
-    overlay.style.boxSizing = 'border-box';
-    overlay.style.userSelect = 'none';
-    overlay.style.touchAction = 'none';
-    overlay.style.cursor = 'move';
-    overlay.style.left = overlay.style.left || '20px';
-    overlay.style.top  = overlay.style.top  || '20px';
-    overlay.style.pointerEvents = 'auto';
-    overlay.style.borderRadius = overlay.style.borderRadius || '18px';
+    if (!state.overlayHost && wants) ensureOverlay();
+    if (!state.overlayHost) return;
 
-    // Resize handle ▣
-    const handle = document.createElement('div');
-    handle.id = 'overlayResizeHandle';
-    Object.assign(handle.style, {
-      position: 'absolute',
-      right: '8px',
-      top: '50%',
-      transform: 'translateY(-50%)',
-      width: '14px',
-      height: '14px',
-      borderRadius: '4px',
-      background: 'rgba(255,255,255,0.14)',
-      border: '1px solid rgba(255,255,255,0.3)',
-      cursor: 'ew-resize',
-      pointerEvents: 'auto'
-    });
-    handle.title = 'Drag to resize';
-    overlay.appendChild(handle);
-
-    document.body.appendChild(overlay);
-
-    // Restore persisted state
-    const state = await loadOverlayState();
-    applyOverlayState(overlay, state);
-
-    // Base width for scaling math
-    const rect = overlay.getBoundingClientRect();
-    const scale = state.scale || 1;
-    overlay.dataset.baseW = String(rect.width / scale);
-    overlay.dataset.baseH = String(rect.height / scale);
-
-    clampOverlay(overlay);
-  } catch (e) {
-    console.warn('[SmartSkipper] Overlay injection failed:', e);
+    const wrap = state.overlayShadow.querySelector(".wrap");
+    wrap.style.display = wants ? "block" : "none";
   }
-}
 
-function bindOverlayControls() {
-  const overlay = document.getElementById('overlay');
-  const timerDisplay = document.getElementById('timerDisplay');
-  if (!overlay || !timerDisplay) return;
+  function setOverlayMin(min) {
+    state.overlayMin = !!min;
+    if (!state.overlayHost) return;
+    const wrap = state.overlayShadow.querySelector(".wrap");
+    wrap.classList.toggle("min", state.overlayMin);
+    const btn = state.overlayShadow.getElementById("spMin");
+    btn.textContent = state.overlayMin ? "▸" : "▾";
+    saveOverlayPos(); // store min state too
+  }
 
-  overlay.addEventListener('click', (e) => {
-    const t = e.target;
-    if (t.dataset.add) {
-      startOrExtendTimer(parseInt(t.dataset.add, 10) * 60);
-    } else if (t.dataset.sub) {
-      remainingSeconds = Math.max(0, remainingSeconds - 600);
-      updateDisplay();
-    } else if (t.id === 'cancelTimer') {
-      stopTimer();
+  function setOverlayScale(scale) {
+    const s = clamp(Number(scale) || 1, 0.65, 1.6);
+    state.overlayScale = s;
+    if (!state.overlayHost) return;
+    const wrap = state.overlayShadow.querySelector(".wrap");
+    wrap.style.setProperty("--scale", String(s));
+    saveOverlayPos();
+  }
+
+  function fmtTime(sec) {
+    sec = Math.max(0, Math.floor(sec));
+    const h = Math.floor(sec / 3600);
+    const m = Math.floor((sec % 3600) / 60);
+    const s = sec % 60;
+    if (h > 0) return `${h}:${String(m).padStart(2,"0")}:${String(s).padStart(2,"0")}`;
+    return `${m}:${String(s).padStart(2,"0")}`;
+  }
+
+  function renderOverlay() {
+    if (!state.overlayHost) return;
+    const t = state.overlayShadow.getElementById("spTime");
+    const sub = state.overlayShadow.getElementById("spSub");
+    const ring = state.overlayShadow.getElementById("spRing");
+
+    if (state.timerRunning && state.remainingSec > 0) {
+      t.textContent = fmtTime(state.remainingSec);
+      sub.textContent = state.timerSuspended ? "Paused" : state.seriesTitle || "Sleep Timer";
+      // progress ring: when we don't know original duration, show pulsing-ish partial.
+      const p = clamp((state.remainingSec % 900) / 900, 0, 1); // 15m loop
+      ring.style.setProperty("--p", `${Math.round(p*100)}%`);
+    } else {
+      t.textContent = "No timer";
+      sub.textContent = state.seriesTitle || "Sleep Timer";
+      ring.style.setProperty("--p", `0%`);
     }
-  });
-
-  // Opacity via Shift + wheel (persist)
-  const saveOpacityDebounced = debounce(() => saveOverlayState(getOverlayStateSync()), 250);
-  document.addEventListener('wheel', (e) => {
-    const overlayNow = document.getElementById('overlay');
-    if (!overlayNow) return;
-    if (!e.shiftKey) return;
-    e.preventDefault();
-    const current = parseFloat(getComputedStyle(overlayNow).opacity) || 1;
-    const delta = e.deltaY > 0 ? -0.1 : 0.1;
-    overlayNow.style.opacity = String(Math.max(0.1, Math.min(1, current + delta)));
-    saveOpacityDebounced();
-  }, { passive: false });
-
-  // Dragging (persist)
-  let dragging = false, ox = 0, oy = 0;
-  overlay.addEventListener('mousedown', (e) => {
-    if (e.target && e.target.id === 'overlayResizeHandle') return;
-    dragging = true;
-    const rect = overlay.getBoundingClientRect();
-    ox = e.clientX - rect.left;
-    oy = e.clientY - rect.top;
-    overlay.style.cursor = 'grabbing';
-    e.preventDefault();
-  });
-  document.addEventListener('mouseup', () => {
-    if (!dragging) return;
-    dragging = false;
-    overlay.style.cursor = 'move';
-    saveOverlayState(getOverlayStateSync());
-  });
-  document.addEventListener('mousemove', (e) => {
-    if (!dragging) return;
-    const x = e.clientX - ox;
-    const y = e.clientY - oy;
-    setOverlayPositionClamped(overlay, x, y);
-  });
-
-  // Resizing with handle (persist)
-  const handle = document.getElementById('overlayResizeHandle');
-  let resizing = false;
-  let startX = 0;
-  handle.addEventListener('mousedown', (e) => {
-    e.stopPropagation();
-    resizing = true;
-    startX = e.clientX;
-    overlay.style.cursor = 'ew-resize';
-    e.preventDefault();
-  });
-  document.addEventListener('mouseup', () => {
-    if (!resizing) return;
-    resizing = false;
-    overlay.style.cursor = 'move';
-    clampOverlay(overlay);
-    saveOverlayState(getOverlayStateSync());
-  });
-  document.addEventListener('mousemove', (e) => {
-    if (!resizing) return;
-    const baseW = parseFloat(overlay.dataset.baseW || '340');
-    const currentRect = overlay.getBoundingClientRect();
-    const desiredW = Math.max(220, currentRect.width + (e.clientX - startX));
-    startX = e.clientX;
-    let newScale = desiredW / baseW;
-    newScale = Math.max(0.6, Math.min(2.2, newScale));
-    overlay.style.transform = `scale(${newScale})`;
-  });
-
-  window.addEventListener('resize', () => {
-    clampOverlay(overlay);
-    saveOverlayState(getOverlayStateSync());
-  });
-
-  updateDisplay();
-}
-
-/* -------------------- Overlay state (persist) -------------------- */
-
-function getOverlayStateSync() {
-  const overlay = document.getElementById('overlay');
-  if (!overlay) return { left: 20, top: 20, opacity: 1, scale: 1 };
-  const rect = overlay.getBoundingClientRect();
-  const opacity = parseFloat(getComputedStyle(overlay).opacity) || 1;
-  const scale = (() => {
-    const m = /scale\(([\d.]+)\)/.exec(overlay.style.transform || '');
-    return m ? parseFloat(m[1]) : 1;
-  })();
-  return { left: Math.round(rect.left), top: Math.round(rect.top), opacity, scale };
-}
-
-function applyOverlayState(overlay, state) {
-  const s = {
-    left: Number.isFinite(state.left) ? state.left : 20,
-    top: Number.isFinite(state.top) ? state.top : 20,
-    opacity: Number.isFinite(state.opacity) ? state.opacity : 1,
-    scale: Number.isFinite(state.scale) ? state.scale : 1
-  };
-  overlay.style.left = `${s.left}px`;
-  overlay.style.top = `${s.top}px`;
-  overlay.style.opacity = String(Math.max(0.1, Math.min(1, s.opacity)));
-  overlay.style.transformOrigin = 'left top';
-  overlay.style.transform = `scale(${Math.max(0.6, Math.min(2.2, s.scale))})`;
-  clampOverlay(overlay);
-}
-
-function loadOverlayState() {
-  return new Promise(resolve => {
-    if (!safeRuntime()) return resolve({ left: 20, top: 20, opacity: 1, scale: 1 });
-    chrome.storage.local.get(['overlayState'], ({ overlayState }) => {
-      resolve(overlayState || { left: 20, top: 20, opacity: 1, scale: 1 });
-    });
-  });
-}
-function saveOverlayState(state) {
-  if (!safeRuntime()) return;
-  chrome.storage.local.set({ overlayState: state || getOverlayStateSync() });
-}
-
-function setOverlayPositionClamped(overlay, x, y) {
-  const rect = overlay.getBoundingClientRect();
-  const w = rect.width, h = rect.height;
-  const margin = 8;
-  const maxLeft = (window.innerWidth  - w - margin);
-  const maxTop  = (window.innerHeight - h - margin);
-  const cl = Math.max(margin, Math.min(maxLeft, x));
-  const ct = Math.max(margin, Math.min(maxTop, y));
-  overlay.style.left = `${cl}px`;
-  overlay.style.top  = `${ct}px`;
-}
-
-function clampOverlay(overlay) {
-  const rect = overlay.getBoundingClientRect();
-  setOverlayPositionClamped(overlay, rect.left, rect.top);
-}
-
-/* -------------------- Timer core (only tick while playing) -------------------- */
-
-function startOrExtendTimer(deltaSeconds) {
-  bindVideoEventsOnce();
-
-  remainingSeconds += deltaSeconds;
-  if (remainingSeconds < 0) remainingSeconds = 0;
-  updateDisplay();
-
-  if (!timerInterval) {
-    timerInterval = setInterval(() => {
-      if (timerSuspended || !isVideoPlaying()) return;
-      remainingSeconds--;
-      updateDisplay();
-
-      if (remainingSeconds <= 180 && !fadeInterval && settings?.sleepTimer?.fadeVolume) {
-        startFadeVolume();
-      }
-
-      if (remainingSeconds <= 0) {
-        handleTimerEnd();
-        stopTimer();
-      }
-    }, 1000);
   }
-}
 
-function stopTimer() {
-  clearInterval(timerInterval);
-  timerInterval = null;
-  clearInterval(fadeInterval);
-  fadeInterval = null;
-  remainingSeconds = 0;
-  updateDisplay();
-}
+  function bindOverlayControls() {
+    const $ = (id) => state.overlayShadow.getElementById(id);
 
-function updateDisplay() {
-  const timerDisplay = document.getElementById('timerDisplay');
-  if (!timerDisplay) return;
-  const m = Math.floor(remainingSeconds / 60);
-  const s = remainingSeconds % 60;
-  timerDisplay.textContent = `⏳ ${m}:${String(s).padStart(2, '0')}`;
-}
+    const click = (id, fn) => $(id).addEventListener("click", (e) => {
+      e.stopPropagation();
+      e.preventDefault();
+      fn();
+    });
 
-/* -------------------- Fade to Sleep -------------------- */
+    click("spAdd15", () => startOrExtendTimer(15*60));
+    click("spAdd30", () => startOrExtendTimer(30*60));
+    click("spAdd60", () => startOrExtendTimer(60*60));
+    click("spSub10", () => startOrExtendTimer(-10*60));
+    click("spCancel", () => stopTimer(false));
 
-function startFadeVolume() {
-  const video = getVideo();
-  if (!video) return;
-  originalVolume = video.volume;
+    click("spSkipIntro", () => triggerSkip("intro"));
+    click("spSkipCredits", () => triggerSkip("credits"));
+    click("spNext", () => triggerSkip("next"));
 
-  fadeInterval = setInterval(() => {
-    const v = getVideo();
-    if (!v || remainingSeconds <= 0 || v.volume <= 0.05) {
-      clearInterval(fadeInterval);
-      fadeInterval = null;
+    $("spMin").addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      setOverlayMin(!state.overlayMin);
+    });
+    // Size controls
+    $("spSizeDown").addEventListener("click", (e) => {
+      e.preventDefault(); e.stopPropagation();
+      setOverlayScale((state.overlayScale || 1) - 0.1);
+    });
+    $("spSizeUp").addEventListener("click", (e) => {
+      e.preventDefault(); e.stopPropagation();
+      setOverlayScale((state.overlayScale || 1) + 0.1);
+    });
+
+    // Resize by dragging the corner handle
+    const resize = $("spResize");
+    let resizing = false;
+    let rsStartX = 0, rsStartY = 0, rsBase = 1;
+
+    resize.addEventListener("pointerdown", (e) => {
+      resizing = true;
+      resize.setPointerCapture(e.pointerId);
+      rsBase = state.overlayScale || 1;
+      rsStartX = e.clientX; rsStartY = e.clientY;
+      e.preventDefault(); e.stopPropagation();
+    });
+
+    resize.addEventListener("pointermove", (e) => {
+      if (!resizing) return;
+      const dx = e.clientX - rsStartX;
+      const dy = e.clientY - rsStartY;
+      // Move right/down -> larger, left/up -> smaller
+      const delta = (dx + dy) / 420;
+      setOverlayScale(rsBase + delta);
+      e.preventDefault(); e.stopPropagation();
+    });
+
+    resize.addEventListener("pointerup", (e) => {
+      if (!resizing) return;
+      resizing = false;
+      try { resize.releasePointerCapture(e.pointerId); } catch {}
+      saveOverlayPos();
+      e.preventDefault(); e.stopPropagation();
+    });
+
+
+    // Drag only by grip
+    const grip = $("spGrip");
+    let dragging = false;
+    let startX=0, startY=0, baseX=18, baseY=18;
+
+    grip.addEventListener("pointerdown", (e) => {
+      dragging = true;
+      grip.setPointerCapture(e.pointerId);
+      const wrap = state.overlayShadow.querySelector(".wrap");
+      const x = parseFloat(wrap.style.getPropertyValue("--x") || "18");
+      const y = parseFloat(wrap.style.getPropertyValue("--y") || "18");
+      baseX = x; baseY = y;
+      startX = e.clientX; startY = e.clientY;
+      e.preventDefault();
+      e.stopPropagation();
+    });
+
+    grip.addEventListener("pointermove", (e) => {
+      if (!dragging) return;
+      const dx = e.clientX - startX;
+      const dy = e.clientY - startY;
+      const wrap = state.overlayShadow.querySelector(".wrap");
+      // use left/bottom (x = left, y = bottom). dy in screen coords is inverted for bottom.
+      const newX = clamp(baseX + dx, 6, (window.innerWidth - 260));
+      const newY = clamp(baseY - dy, 6, (window.innerHeight - 96));
+      wrap.style.setProperty("--x", `${newX}px`);
+      wrap.style.setProperty("--y", `${newY}px`);
+      e.preventDefault();
+      e.stopPropagation();
+    });
+
+    grip.addEventListener("pointerup", (e) => {
+      if (!dragging) return;
+      dragging = false;
+      try { grip.releasePointerCapture(e.pointerId); } catch {}
+      saveOverlayPos();
+      e.preventDefault();
+      e.stopPropagation();
+    });
+  }
+
+  async function restoreOverlayPos() {
+    if (!safeRuntime()) return;
+    try {
+      const res = await new Promise((resolve) => chrome.storage.local.get(["overlayPosV5"], resolve));
+      const pos = res.overlayPosV5 || null;
+      if (!pos || !state.overlayHost) return;
+      const wrap = state.overlayShadow.querySelector(".wrap");
+      if (typeof pos.x === "number") wrap.style.setProperty("--x", `${pos.x}px`);
+      if (typeof pos.y === "number") wrap.style.setProperty("--y", `${pos.y}px`);
+      if (typeof pos.scale === "number") setOverlayScale(pos.scale);
+      if (typeof pos.min === "boolean") setOverlayMin(pos.min);
+    } catch {}
+  }
+
+  function saveOverlayPos() {
+    if (!safeRuntime() || !state.overlayHost) return;
+    try {
+      const wrap = state.overlayShadow.querySelector(".wrap");
+      const x = parseFloat(wrap.style.getPropertyValue("--x") || "18");
+      const y = parseFloat(wrap.style.getPropertyValue("--y") || "18");
+      chrome.storage.local.set({ overlayPosV5: { x, y, min: state.overlayMin, scale: state.overlayScale } });
+    } catch {}
+  }
+
+  /* -------------------- dim screen -------------------- */
+  function ensureDimLayer() {
+    let el = document.getElementById("sp-dim-layer");
+    if (el) return el;
+    el = document.createElement("div");
+    el.id = "sp-dim-layer";
+    Object.assign(el.style, {
+      position: "fixed",
+      inset: "0",
+      background: "black",
+      opacity: "0",
+      pointerEvents: "none",
+      zIndex: "2147483646",
+      transition: "opacity 250ms ease"
+    });
+    document.documentElement.appendChild(el);
+    return el;
+  }
+
+  function setDim(on) {
+    if (!state.settings.dimScreen) return;
+    const el = ensureDimLayer();
+    el.style.opacity = on ? "0.68" : "0";
+    el.style.pointerEvents = on ? "auto" : "none";
+  }
+
+  /* -------------------- timer -------------------- */
+  function startOrExtendTimer(deltaSec) {
+    const next = clamp((state.remainingSec || 0) + deltaSec, 0, 12 * 3600);
+    state.remainingSec = next;
+
+    if (state.remainingSec <= 0) {
+      stopTimer(false);
       return;
     }
-    v.volume = Math.max(0, v.volume - (fadeVolumeStep / 100));
-  }, 30000);
-}
-
-/* -------------------- Timer end behavior -------------------- */
-
-function handleTimerEnd() {
-  if (settings?.globalEnabled === false) return;
-  const video = getVideo();
-  if (video) {
-    if (settings.muteInsteadOfPause) video.muted = true;
-    else { try { video.pause(); } catch {} }
-    try { video.volume = originalVolume; } catch {}
+    state.timerRunning = true;
+    state.lastTickMs = Date.now();
+    state.fadeActive = false;
+    renderOverlay();
+    // do NOT force-enable overlay; only show if user already enabled it
+    if (state.settings.countdownVisible) setOverlayVisible(true);
   }
-  if (settings.dimScreen) {
-    document.documentElement.classList.add('dimmed');
-    document.body.classList.add('dimmed');
+
+  function stopTimer(triggerEndActions) {
+    const had = state.timerRunning;
+    state.timerRunning = false;
+    state.timerSuspended = false;
+    state.remainingSec = 0;
+    state.fadeActive = false;
+    renderOverlay();
+    // keep overlay visible if user wants it; just shows "No timer"
+    if (triggerEndActions && had) onTimerEnd();
   }
-}
 
-/* -------------------- Episode Guard -------------------- */
+  async function onTimerEnd() {
+    const v = getVideo();
+    if (!v) return;
 
-function handleEpisodeGuard() {
-  if (!IS_TOP) return;
-  const guard = settings.episodeGuard;
-  if (!guard?.enabled) return;
-
-  safeSendMessage({ type: 'incrementWatchedCount' }).then((res) => {
-    const updated = res?.updated;
-    if (updated && updated.watchedCount >= guard.maxEpisodes) {
-      const video = getVideo();
-      if (video) try { video.pause(); } catch {}
-      alert('🛑 Episode Guard limit reached.');
+    // Fade handled already; enforce end action
+    if (state.settings.muteInsteadOfPause) {
+      v.muted = true;
+    } else {
+      try { v.pause(); } catch {}
     }
-  });
+    setDim(true);
+  }
 
-  setTimeout(() => safeSendMessage({ type: 'resetWatchedCount' }), 10 * 60 * 1000);
-}
+  function maybeRunFade(v) {
+    const beta = state.settings.beta || DEFAULTS.beta;
+    if (!beta.enabled || !beta.fadeBeforeTimerEnd) return;
 
-/* -------------------- Utils -------------------- */
+    const fadeSec = clamp(Number(beta.fadeSeconds || 20), 3, 180);
+    if (state.remainingSec > fadeSec) return;
 
-function debounce(fn, ms) {
-  let t; return (...args) => { clearTimeout(t); t = setTimeout(() => fn(...args), ms); };
-}
+    if (!state.fadeActive) {
+      state.fadeActive = true;
+      state.fadeStartVolume = v.volume;
+    }
+    const p = 1 - (state.remainingSec / fadeSec); // 0->1
+    const vol = clamp(state.fadeStartVolume * (1 - p), 0, 1);
+    v.volume = vol;
+  }
+
+  function tick() {
+    const v = getVideo();
+    if (!state.timerRunning || state.remainingSec <= 0) return;
+
+    const now = Date.now();
+    const dt = Math.max(0, now - (state.lastTickMs || now));
+    state.lastTickMs = now;
+
+    // count down only while playing
+    if (v && isPlaying(v)) {
+      state.timerSuspended = false;
+      const dec = dt / 1000;
+      state.remainingSec = Math.max(0, state.remainingSec - dec);
+      maybeRunFade(v);
+      if (state.remainingSec <= 0.01) {
+        stopTimer(true);
+      }
+    } else {
+      state.timerSuspended = true;
+    }
+    renderOverlay();
+  }
+
+  /* -------------------- skipper (intro/credits/next) -------------------- */
+  const RE_INTRO = /\bskip\s+(intro|opening|recap)\b/i;
+  const RE_CREDITS = /\bskip\s+(credits|outro)\b/i;
+  const RE_NEXT = /\b(next\s+episode|play\s+next|next)\b/i;
+  const RE_TRANSPORT_NEG = /\b(10\s*(sec|seconds)|replay\s*10|forward\s*10|skip\s*(ahead|back)\s*10)\b/i;
+  // ---- Smart "Play Next / Next Episode" (ported from your original next.js) ----
+  // Purpose: reliably click the actual "Play Next / Next Episode" CTA without touching transport controls or menus.
+  const SN_NEXT_WORDS = /\b(play\s*next|next\s*episode|watch\s*next|continue(?!\s*watching\s*from)|continue\s*to\s*next|up\s*next)\b/i;
+  const SN_NEGATIVE_WORDS = /\b(autoplay\s*(on|off)?|settings|preferences|audio|subtitles|resume)\b/i;
+
+  const SN_TRANSPORT_LABEL_NEG = /\b(10\s*(sec|seconds)|ten\s*seconds|seek|scrub|timeline|progress|jump|rewind|replay\s*10|forward\s*10|skip\s*(ahead|back)\s*10)\b/i;
+  const SN_TRANSPORT_CLASS_NEG = /(Transport|control|Controls|Seek|SkipForward|SkipBack|Replay|Timeline|Scrub|Progress|OSD)/i;
+
+  const SN_HIDE_CLASSES = ['hidden','opacity-0','invisible','sr-only','is-hidden','u-hidden','visually-hidden'];
+
+  const SN_CLICK_COOLDOWN_MS = 300;
+  let snLastClickTs = 0;
+
+  function snIsInMenuOrContext(el) {
+    return !!el?.closest?.(
+      [
+        '[role="menu"]',
+        '[role="menuitem"]',
+        '.ContextMenu',
+        '.contextMenu',
+        '.Menu',
+        '.Dropdown',
+        '[data-testid*="menu"]',
+        '[data-qa-id*="menu"]'
+      ].join(',')
+    );
+  }
+
+  function snIsTransportElement(el) {
+    for (let n = el, i = 0; n && i < 10; i++, n = n.parentElement) {
+      const cls = (n.className || '').toString();
+      if (SN_TRANSPORT_CLASS_NEG.test(cls)) return true;
+    }
+    return false;
+  }
+
+  function snIsLatePhase() {
+    const v = getVideo();
+    if (!v || !Number.isFinite(v.duration) || v.duration <= 0) return false;
+    const p = (v.currentTime || 0) / v.duration;
+    return p >= 0.80;
+  }
+
+  function snClickPlexUpNextIfPresent() {
+    const settings = state.settings || {};
+    const delay = Number.isFinite(settings.skipDelayMs) ? settings.skipDelayMs : 500;
+
+    const auto = document.getElementById('autoPlayCheck');
+    if (!auto || !(auto instanceof HTMLInputElement) || !auto.checked) return false;
+
+    const btn = document.querySelector(
+      '[class*="AudioVideoUpNext-poster"] button[aria-label="Play Next"][class*="AudioVideoUpNext-playButton"]'
+    );
+    if (!btn) return false;
+    if (snIsInMenuOrContext(btn) || snIsTransportElement(btn)) return false;
+    if (!snIsVisible(btn)) return false;
+
+    const now = Date.now();
+    if (now - snLastClickTs < SN_CLICK_COOLDOWN_MS) return true;
+    snLastClickTs = now;
+
+    const target = snResolveClickable(btn) || btn;
+    if (!target) return true;
+
+    setTimeout(() => {
+      snSimulatedClick(target);
+      // console.debug('[StreamPlus:next] ✅ Clicked Plex Play Next (fast path)');
+    }, delay);
+
+    return true;
+  }
+
+  const SN_SELECTORS = [
+    'button', '[role=button]', 'a[role=button]',
+    '[class*="OverlayButton"]', '[class*="overlayButton"]',
+    '[class*="FullPlayer"] [class*="Button"]',
+    '[class*="UpNext"] [class*="Button"]',
+    '[data-testid*="next" i]', '[data-qa-id*="next" i]',
+    '[class*="Next" i]', '[class*="next" i]'
+  ];
+
+  function snFindNextCandidates() {
+    const late = snIsLatePhase();
+    const out = [];
+
+    for (const el of snDeepQueryAllRoots([document], SN_SELECTORS, 0, 8)) {
+      if (!snIsElement(el)) continue;
+      if (snIsTransportElement(el)) continue;
+      if (snIsInMenuOrContext(el)) continue;
+
+      const label = snGetElementLabel(el);
+      if (SN_TRANSPORT_LABEL_NEG.test(label)) continue;
+      if (SN_NEGATIVE_WORDS.test(label)) continue;
+
+      const hasNext = SN_NEXT_WORDS.test(label);
+      if (!hasNext) continue;
+
+      const overlayish = snHasOverlayAncestry(el);
+      out.push({ el, score: snScoreNextCandidate(el, label, late, overlayish) });
+    }
+
+    return out;
+  }
+
+  function snGetElementLabel(el) {
+    const aria = el.getAttribute?.('aria-label') || '';
+    const title = el.getAttribute?.('title') || '';
+    const own = (el.textContent || '');
+    const near = snClosestOverlay(el) || el.parentElement || {};
+    const nearText = (near.textContent || '');
+    return `${aria}\n${title}\n${own}\n${nearText}`.replace(/\s+/g, ' ').trim();
+  }
+
+  function snClosestOverlay(el) {
+    return el.closest?.(
+      '[class*="Overlay"], [class*="overlay"], [class*="UpNext"], [data-testid*="overlay" i], [class*="Autoplay"]'
+    ) || null;
+  }
+
+  function snHasOverlayAncestry(el) {
+    for (let n = el, i = 0; n && i < 10; i++, n = n.parentElement) {
+      const cls = (n.className || '').toString();
+      if (/Overlay|overlay|FullPlayer|UpNext|Autoplay/i.test(cls)) return true;
+    }
+    return false;
+  }
+
+  function snScoreNextCandidate(el, label, late, overlayish) {
+    let s = 0;
+    if (SN_NEXT_WORDS.test(label)) s += 4;
+    if (overlayish) s += 3;
+    if (late) s += 2;
+    try {
+      const r = el.getBoundingClientRect();
+      if (r.width * r.height > 1500) s += 1;
+      const cx = Math.abs((r.left + r.right) / 2 - window.innerWidth / 2);
+      const cy = Math.abs((r.top + r.bottom) / 2 - window.innerHeight / 2);
+      if (cx < window.innerWidth * 0.35) s += 1;
+      if (cy < window.innerHeight * 0.45) s += 1;
+    } catch {}
+    return s;
+  }
+
+  function snPickVisibleButton(node) {
+    if (snIsVisible(node)) return node;
+    try {
+      const btn = node.querySelector?.('button,[role=button],a[role=button],*[onclick]');
+      if (btn && snIsVisible(btn) && !snIsInMenuOrContext(btn) && !snIsTransportElement(btn)) return btn;
+    } catch {}
+    return null;
+  }
+
+  function snForceReveal(container, button) {
+    const touched = [];
+
+    const touch = (el, attrs) => {
+      if (!el) return;
+      const prev = {
+        el,
+        style: el.getAttribute('style'),
+        hidden: el.getAttribute('aria-hidden'),
+        class: el.getAttribute('class')
+      };
+      touched.push(prev);
+
+      try {
+        const cl = new Set((el.className || '').toString().split(/\s+/));
+        let changed = false;
+        for (const h of SN_HIDE_CLASSES) if (cl.has(h)) { cl.delete(h); changed = true; }
+        if (changed) el.className = [...cl].join(' ');
+      } catch {}
+
+      try {
+        if (el.hasAttribute('aria-hidden')) el.setAttribute('aria-hidden', 'false');
+      } catch {}
+
+      try {
+        const st = el.style;
+        st.setProperty('opacity', '1', 'important');
+        st.setProperty('visibility', 'visible', 'important');
+        st.setProperty('display', 'block', 'important');
+        st.setProperty('pointer-events', 'auto', 'important');
+        st.setProperty('transform', 'none', 'important');
+        st.setProperty('filter', 'none', 'important');
+        if (attrs) for (const [k,v] of Object.entries(attrs)) st.setProperty(k, v, 'important');
+      } catch {}
+    };
+
+    touch(container, { 'z-index': '2147483647' });
+    touch(button,   { 'z-index': '2147483647' });
+
+    if (button && button.parentElement) touch(button.parentElement, { overflow: 'visible' });
+
+    try { container.scrollIntoView?.({ block: 'center', inline: 'center', behavior: 'instant' }); } catch {}
+
+    return () => {
+      for (const prev of touched.reverse()) {
+        try {
+          if (prev.style == null) prev.el.removeAttribute('style');
+          else prev.el.setAttribute('style', prev.style);
+        } catch {}
+        try {
+          if (prev.hidden == null) prev.el.removeAttribute('aria-hidden');
+          else prev.el.setAttribute('aria-hidden', prev.hidden);
+        } catch {}
+        try {
+          if (prev.class == null) prev.el.removeAttribute('class');
+          else prev.el.setAttribute('class', prev.class);
+        } catch {}
+      }
+    };
+  }
+
+  function snResolveClickable(node) {
+    let el = node;
+    for (let i = 0; i < 8 && el; i++, el = el.parentElement) {
+      if (!snIsElement(el)) continue;
+      if (snIsInMenuOrContext(el)) break;
+      const tag = (el.tagName || '').toLowerCase();
+      const role = (el.getAttribute?.('role') || '').toLowerCase();
+      const style = getComputedStyle(el);
+      const clickable =
+        tag === 'button' ||
+        role === 'button' ||
+        el.hasAttribute('onclick') ||
+        (parseFloat(style.opacity || '1') > 0.06 &&
+         style.pointerEvents !== 'none' &&
+         (style.cursor === 'pointer' || tag === 'a'));
+      if (clickable && !snIsTransportElement(el)) return el;
+    }
+    let desc;
+    try { desc = node.querySelector?.('button,[role=button],a[role=button],*[onclick]'); } catch {}
+    if (desc && !snIsTransportElement(desc) && !snIsInMenuOrContext(desc)) return desc;
+    return snIsElement(node) && !snIsTransportElement(node) && !snIsInMenuOrContext(node) ? node : null;
+  }
+
+  function snSimulatedClick(el) {
+    try {
+      el.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, cancelable: true, buttons: 1 }));
+      el.dispatchEvent(new MouseEvent('mousedown',   { bubbles: true, cancelable: true, buttons: 1 }));
+      el.dispatchEvent(new MouseEvent('mouseup',     { bubbles: true, cancelable: true, buttons: 1 }));
+      el.dispatchEvent(new MouseEvent('click',       { bubbles: true, cancelable: true, buttons: 1 }));
+    } catch {
+      try { el.click?.(); } catch {}
+    }
+  }
+
+  function snIsElement(x) { return x && x.nodeType === 1; }
+
+  function snIsVisible(el) {
+    if (!snIsElement(el)) return false;
+    let r, s;
+    try { r = el.getBoundingClientRect(); s = getComputedStyle(el); } catch { return false; }
+    return (
+      r.width >= 8 &&
+      r.height >= 8 &&
+      r.bottom >= 0 && r.right >= 0 &&
+      r.top <= (window.innerHeight || 0) && r.left <= (window.innerWidth || 0) &&
+      s.display !== 'none' && s.visibility !== 'hidden' &&
+      parseFloat(s.opacity || '1') > 0.06 &&
+      s.pointerEvents !== 'none'
+    );
+  }
+
+  function* snDeepQueryAllRoots(roots, selectors, depth = 0, maxDepth = 8) {
+    for (const root of roots) {
+      if (!root) continue;
+
+      for (const sel of selectors) {
+        let list = [];
+        try { list = root.querySelectorAll(sel); } catch {}
+        for (const el of list) yield el;
+      }
+
+      if (depth >= maxDepth) continue;
+
+      let all = [];
+      try { all = root.querySelectorAll('*'); } catch {}
+      for (const host of all) {
+        const sr = host && host.shadowRoot;
+        if (sr) yield* snDeepQueryAllRoots([sr], selectors, depth + 1, maxDepth);
+      }
+
+      let iframes = [];
+      try { iframes = root.querySelectorAll('iframe'); } catch {}
+      for (const f of iframes) {
+        try {
+          const doc = f.contentDocument;
+          if (doc) yield* snDeepQueryAllRoots([doc], selectors, depth + 1, maxDepth);
+        } catch {}
+      }
+    }
+  }
+
+  function snWait(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+  async function smartNextTryClickOnce(force = false) {
+    const settings = state.settings || {};
+    if (settings.globalEnabled === false) return false;
+    const rules = currentRules();
+    if (!rules.nextEpisode) return false;
+
+    // Fast path first
+    if (snClickPlexUpNextIfPresent()) return true;
+
+    // If not force, we still allow clicking whenever the "Next" CTA exists; scoring just prefers late phase.
+    const cands = snFindNextCandidates();
+    if (!cands.length) return false;
+
+    cands.sort((a, b) => (b.score || 0) - (a.score || 0));
+    const delay = Number.isFinite(settings.skipDelayMs) ? settings.skipDelayMs : 500;
+
+    for (const cand of cands) {
+      const now = Date.now();
+      if (now - snLastClickTs < SN_CLICK_COOLDOWN_MS) return true;
+      snLastClickTs = now;
+
+      setTimeout(async () => {
+        let target = snResolveClickable(cand.el);
+        if (!target) return;
+
+        if (!snIsVisible(target)) {
+          const overlay = snClosestOverlay(target) || target.parentElement || document.body;
+          const restore = snForceReveal(overlay, target);
+          await snWait(120);
+
+          target = snResolveClickable(target) || target;
+
+          if (!snIsVisible(target)) {
+            const alt = snPickVisibleButton(overlay);
+            if (alt) target = alt;
+          }
+
+          if (!snIsVisible(target)) await snWait(80);
+
+          if (snIsVisible(target)) {
+            snSimulatedClick(target);
+            restore();
+            return;
+          }
+
+          restore();
+          return;
+        }
+
+        snSimulatedClick(target);
+      }, delay);
+      break;
+    }
+
+    return true;
+  }
+
+
+  let skipperLastClick = 0;
+
+  function findClickable(re) {
+    const candidates = Array.from(document.querySelectorAll(
+      'button,[role="button"],a,[data-testid],div[tabindex]'
+    ));
+    for (const el of candidates) {
+      const txt = (el.innerText || el.textContent || el.getAttribute("aria-label") || "").trim();
+      if (!txt) continue;
+      if (RE_TRANSPORT_NEG.test(txt)) continue;
+      if (!re.test(txt)) continue;
+      if (!isVisible(el)) continue;
+      return el;
+    }
+    return null;
+  }
+
+  async function clickWithDelay(el) {
+    const delay = clamp(Number(state.settings.skipDelayMs || 0), 0, 5000);
+    if (delay) await sleep(delay);
+    try { el.click(); } catch {}
+  }
+
+  async function skipperLoop() {
+    const v = getVideo();
+    if (!v) return;
+
+    // update series info opportunistically
+    state.seriesKey = parseSeriesKeyFromUrl();
+    state.seriesTitle = inferSeriesTitle();
+    setLocal({ activeSeriesKey: state.seriesKey, activeSeriesTitle: state.seriesTitle });
+
+    if (!state.settings.globalEnabled) return;
+    const rules = currentRules();
+
+    const now = Date.now();
+    if (now - skipperLastClick < 600) return;
+
+    if (rules.skipIntro) {
+      const el = findClickable(RE_INTRO);
+      if (el) { skipperLastClick = now; await clickWithDelay(el); return; }
+    }
+    if (rules.skipCredits) {
+      const el = findClickable(RE_CREDITS);
+      if (el) { skipperLastClick = now; await clickWithDelay(el); return; }
+    }
+    if (rules.nextEpisode) {
+      const did = await smartNextTryClickOnce(false);
+      if (did) { skipperLastClick = now; return; }
+    }
+  }
+
+  function triggerSkip(kind) {
+    if (!state.settings.globalEnabled) return;
+    if (kind === "intro") {
+      const el = findClickable(RE_INTRO);
+      if (el) clickWithDelay(el);
+    } else if (kind === "credits") {
+      const el = findClickable(RE_CREDITS);
+      if (el) clickWithDelay(el);
+    } else if (kind === "next") {
+      // Use the smart next skipper logic for manual clicks too
+      smartNextTryClickOnce(true);
+    }
+  }
+
+  /* -------------------- beta helpers -------------------- */
+  async function applyWakeLock(v) {
+    const beta = state.settings.beta || DEFAULTS.beta;
+    if (!beta.enabled || !beta.wakeLock) {
+      if (state.wakeLock) { try { await state.wakeLock.release(); } catch {} state.wakeLock = null; }
+      return;
+    }
+    if (!("wakeLock" in navigator)) return;
+    if (!isPlaying(v)) return;
+    if (state.wakeLock) return;
+    try {
+      state.wakeLock = await navigator.wakeLock.request("screen");
+      state.wakeLock.addEventListener("release", () => { state.wakeLock = null; });
+    } catch {}
+  }
+
+  function setupPauseOnHidden(v) {
+    const beta = state.settings.beta || DEFAULTS.beta;
+    if (!beta.enabled || !beta.pauseOnHidden) return;
+
+    const sec = clamp(Number(beta.pauseOnHiddenSec || 10), 3, 600);
+
+    document.addEventListener("visibilitychange", () => {
+      clearTimeout(state.hiddenPauseTimer);
+      if (document.hidden && isPlaying(v)) {
+        state.hiddenPauseTimer = setTimeout(() => {
+          const vv = getVideo();
+          if (vv && document.hidden && isPlaying(vv)) {
+            try { vv.pause(); } catch {}
+          }
+        }, sec * 1000);
+      }
+    }, { passive: true });
+  }
+
+  function setupAutoFullscreen(v) {
+    const beta = state.settings.beta || DEFAULTS.beta;
+    if (!beta.enabled || !beta.autoFullscreen) return;
+
+    // best-effort; browser may block. run once per session.
+    if (state.__didFullscreen) return;
+    state.__didFullscreen = true;
+
+    v.addEventListener("play", async () => {
+      try {
+        if (document.fullscreenElement) return;
+        const target = v.closest("[data-testid],.Player,main") || v;
+        await target.requestFullscreen?.();
+      } catch {}
+    }, { once: true });
+  }
+
+  function setupPlaybackSpeed(v) {
+    const beta = state.settings.beta || DEFAULTS.beta;
+    if (!beta.enabled) return;
+
+    // apply once when metadata is ready
+    const apply = async () => {
+      if (state.hasAppliedSpeed) return;
+      state.hasAppliedSpeed = true;
+
+      try {
+        const cur = await getSync(["spLastPlaybackRate"]);
+        let rate = Number(beta.defaultSpeed || 1.0);
+        if (beta.rememberSpeed && typeof cur.spLastPlaybackRate === "number") rate = cur.spLastPlaybackRate;
+        rate = clamp(rate, 0.25, 3.0);
+        v.playbackRate = rate;
+      } catch {}
+    };
+
+    v.addEventListener("loadedmetadata", apply, { once: true });
+    v.addEventListener("ratechange", () => {
+      if (!beta.rememberSpeed) return;
+      // store globally
+      const r = clamp(Number(v.playbackRate || 1), 0.25, 3.0);
+      setSync({ spLastPlaybackRate: r });
+    });
+  }
+
+  function setupSubtitles(v) {
+    const beta = state.settings.beta || DEFAULTS.beta;
+    if (!beta.enabled) return;
+
+    const pref = (beta.subtitlesDefault || "auto").toLowerCase();
+    if (!["auto","on","off"].includes(pref)) return;
+
+    const apply = () => {
+      const tracks = v.textTracks;
+      if (!tracks || tracks.length === 0) return;
+
+      if (pref === "auto") return; // leave Plex default
+      for (const tr of tracks) {
+        try { tr.mode = (pref === "on") ? "showing" : "disabled"; } catch {}
+      }
+    };
+
+    v.addEventListener("loadedmetadata", apply);
+  }
+
+  function autoContinueWatchingTick() {
+    const beta = state.settings.beta || DEFAULTS.beta;
+    if (!beta.enabled || !beta.autoContinueWatching) return;
+
+    const re = /\b(continue watching|still watching|continue)\b/i;
+    const buttons = Array.from(document.querySelectorAll('button,[role="button"]'));
+    for (const b of buttons) {
+      const txt = (b.innerText || b.textContent || "").trim();
+      if (!txt || txt.length > 40) continue;
+      if (!re.test(txt)) continue;
+      if (!isVisible(b)) continue;
+      try { b.click(); } catch {}
+      break;
+    }
+  }
+
+  function maybeAutoStartTimerOnPlay(v) {
+    const beta = state.settings.beta || DEFAULTS.beta;
+    if (!beta.enabled || !beta.autoStartTimerOnPlay) return;
+    if (state.hasAutoStartedTimerThisSession) return;
+
+    v.addEventListener("play", () => {
+      if (state.timerRunning && state.remainingSec > 0) return;
+      if (state.hasAutoStartedTimerThisSession) return;
+      state.hasAutoStartedTimerThisSession = true;
+      const mins = clamp(Number(beta.autoStartTimerMinutes || 30), 5, 360);
+      startOrExtendTimer(mins * 60);
+    }, { once: true });
+  }
+
+  /* -------------------- settings load + live updates -------------------- */
+  async function loadSettings() {
+    const raw = await getSync(STORAGE_KEYS);
+    // merge defaults
+    state.settings = {
+      ...DEFAULTS,
+      ...raw,
+      episodeGuard: { ...DEFAULTS.episodeGuard, ...(raw.episodeGuard || {}) },
+      beta: { ...DEFAULTS.beta, ...(raw.beta || {}) },
+      perShowRules: raw.perShowRules || DEFAULTS.perShowRules
+    };
+
+    // set overlay visibility according to user pref (doesn't start/stop timer)
+    setOverlayVisible(!!state.settings.countdownVisible);
+  }
+
+  function onStorageChanged(changes, area) {
+    if (area !== "sync") return;
+    let shouldReload = false;
+    for (const k of STORAGE_KEYS) {
+      if (changes[k]) { shouldReload = true; break; }
+    }
+    if (!shouldReload) return;
+    loadSettings().then(() => {
+      // update overlay immediately
+      renderOverlay();
+    });
+  }
+
+  /* -------------------- message API (popup) -------------------- */
+  function onMessage(msg, _sender, sendResponse) {
+    if (!msg || typeof msg !== "object") return;
+
+    if (msg.type === "sp:state:get") {
+      const v = getVideo();
+      sendResponse({
+        hasVideo: !!v,
+        playing: isPlaying(v),
+        seriesKey: state.seriesKey,
+        seriesTitle: state.seriesTitle,
+        timerRunning: state.timerRunning,
+        timerRemainingSec: Math.max(0, Math.floor(state.remainingSec)),
+        overlayVisible: !!state.settings.countdownVisible
+      });
+      return true;
+    }
+
+    if (msg.type === "sp:timer:add") { startOrExtendTimer((msg.seconds || 0)); sendResponse({ ok: true }); return true; }
+    if (msg.type === "sp:timer:cancel") { stopTimer(false); sendResponse({ ok: true }); return true; }
+
+    if (msg.type === "sp:overlay:set") {
+      // user toggled preference; we persist it, and setOverlayVisible will follow
+      setSync({ countdownVisible: !!msg.visible }).then(() => sendResponse({ ok: true }));
+      return true;
+    }
+
+    if (msg.type === "sp:automation:set") {
+      setSync({ globalEnabled: !!msg.enabled }).then(() => sendResponse({ ok: true }));
+      return true;
+    }
+
+    if (msg.type === "sp:action") {
+      triggerSkip(msg.kind);
+      sendResponse({ ok: true });
+      return true;
+    }
+  }
+
+  /* -------------------- boot -------------------- */
+  async function boot() {
+    await loadSettings();
+
+    // series
+    state.seriesKey = parseSeriesKeyFromUrl();
+    state.seriesTitle = inferSeriesTitle();
+    setLocal({ activeSeriesKey: state.seriesKey, activeSeriesTitle: state.seriesTitle });
+
+    if (safeRuntime()) {
+      chrome.storage.onChanged.addListener(onStorageChanged);
+      chrome.runtime.onMessage.addListener(onMessage);
+    }
+
+    // Overlay is optional; only render it once a video exists (prevents showing on Plex home pages).
+    if (state.settings.countdownVisible && getVideo()) {
+      ensureOverlay();
+      setOverlayVisible(true);
+      renderOverlay();
+    }
+
+    // periodic loops (lightweight)
+    setInterval(() => {
+      tick();
+    }, 250);
+
+    setInterval(() => {
+      // Only attempt skipper if a video exists (prevents nav pages from being spammed)
+      if (getVideo()) skipperLoop();
+    }, 500);
+
+    // Smart Next: run even if <video> disappears (Plex post-play / up-next screen).
+    // Guarded so it won't spam on non-player pages.
+    setInterval(() => {
+      try {
+        const s = state.settings || {};
+        if (s.globalEnabled === false) return;
+        const rules = currentRules();
+        if (!rules.nextEpisode) return;
+        if (!isLikelyPlayerContext()) return;
+        // Prefer top frame, but allow subframes if they contain the Up Next UI (some Plex builds mount player UI in an iframe).
+        if (!IS_TOP) {
+          const hasUpNextUI = !!document.querySelector('[class*="UpNext"],[class*="AudioVideoUpNext"],[class*="Postplay"],#autoPlayCheck');
+          if (!hasUpNextUI) return;
+        }
+        smartNextTryClickOnce(false);
+      } catch {}
+    }, 300);
+
+
+    setInterval(() => {
+      if (getVideo()) autoContinueWatchingTick();
+    }, 1200);
+
+
+    // Smart Next observer: reacts immediately when "Up Next" UI mounts.
+    const nextMo = new MutationObserver(() => {
+      try {
+        const s = state.settings || {};
+        if (s.globalEnabled === false) return;
+        const rules = currentRules();
+        if (!rules.nextEpisode) return;
+        if (!isLikelyPlayerContext()) return;
+        if (!IS_TOP) {
+          const hasUpNextUI = !!document.querySelector('[class*="UpNext"],[class*="AudioVideoUpNext"],[class*="Postplay"],#autoPlayCheck');
+          if (!hasUpNextUI) return;
+        }
+        smartNextTryClickOnce(false);
+      } catch {}
+    });
+    try { nextMo.observe(document, { childList: true, subtree: true }); } catch {}
+
+    // bind once when video appears
+    const mo = new MutationObserver(() => {
+      const v = getVideo();
+      if (!v) return;
+
+      // overlay (only when enabled)
+      if (state.settings.countdownVisible) {
+        ensureOverlay();
+        setOverlayVisible(true);
+        renderOverlay();
+      }
+
+      // beta hooks
+      applyWakeLock(v);
+      setupPauseOnHidden(v);
+      setupAutoFullscreen(v);
+      setupPlaybackSpeed(v);
+      setupSubtitles(v);
+      maybeAutoStartTimerOnPlay(v);
+
+      // keep wake lock updated with play/pause
+      v.addEventListener("play", () => applyWakeLock(v), { passive: true });
+      v.addEventListener("pause", () => applyWakeLock(v), { passive: true });
+    });
+    mo.observe(document.documentElement, { childList: true, subtree: true });
+
+    // initial if already present
+    const v0 = getVideo();
+    if (v0) {
+      applyWakeLock(v0);
+      setupPauseOnHidden(v0);
+      setupAutoFullscreen(v0);
+      setupPlaybackSpeed(v0);
+      setupSubtitles(v0);
+      maybeAutoStartTimerOnPlay(v0);
+    }
+  }
+
+  boot();
+})();

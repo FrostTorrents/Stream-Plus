@@ -1,25 +1,183 @@
 <!-- overlay.html — fragment template (no scripts; logic is in content.js) -->
-<div id="overlay" style="
-  position: fixed;
-  bottom: 20px;
-  left: 20px;
-  background: rgba(30, 30, 30, 0.9);
-  color: #fff;
-  padding: 6px 10px;
-  font-size: 14px;
-  border-radius: 12px;
-  box-shadow: 0 4px 12px rgba(0,0,0,0.4);
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  z-index: 2147483646;
-  cursor: move;
-  user-select: none;">
-  <span style="opacity:.5;margin-right:6px;cursor:grab;">⠿</span>
-  <button data-add="15">+15m</button>
-  <button data-add="30">+30m</button>
-  <button data-add="60">+60m</button>
-  <button data-sub="10">−10m</button>
-  <button id="cancelTimer">✖</button>
-  <span id="timerDisplay" style="margin-left:auto;font-weight:700;font-variant-numeric:tabular-nums">⏳ 0:00</span>
+<div id="overlay" class="sp-overlay" role="dialog" aria-label="Sleep timer overlay">
+  <style>
+    /* Stream Plus overlay — self-contained styles */
+    #overlay.sp-overlay {
+      font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji";
+      color: rgba(255,255,255,0.92);
+      background: rgba(18, 18, 20, 0.72);
+      backdrop-filter: blur(12px);
+      -webkit-backdrop-filter: blur(12px);
+      border: 1px solid rgba(255,255,255,0.12);
+      border-radius: 18px;
+      box-shadow: 0 18px 48px rgba(0,0,0,0.38);
+      padding: 10px 10px 12px;
+      min-width: 260px;
+    }
+
+    #overlay .sp-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    #overlay .sp-header {
+      justify-content: space-between;
+      margin-bottom: 10px;
+    }
+
+    #overlay .sp-grip {
+      width: 28px;
+      height: 28px;
+      display: grid;
+      place-items: center;
+      border-radius: 10px;
+      background: rgba(255,255,255,0.06);
+      border: 1px solid rgba(255,255,255,0.08);
+      cursor: grab;
+      user-select: none;
+    }
+    #overlay .sp-grip:active { cursor: grabbing; }
+
+    #overlay .sp-title {
+      display: flex;
+      flex-direction: column;
+      line-height: 1.05;
+      gap: 2px;
+      min-width: 0;
+      flex: 1;
+    }
+    #overlay .sp-title .name {
+      font-weight: 700;
+      font-size: 13px;
+      letter-spacing: 0.2px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    #overlay .sp-title .sub {
+      font-size: 11px;
+      opacity: 0.7;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    #overlay button {
+      all: unset;
+      box-sizing: border-box;
+      cursor: pointer;
+      user-select: none;
+      -webkit-tap-highlight-color: transparent;
+    }
+
+    #overlay .sp-iconBtn {
+      width: 28px;
+      height: 28px;
+      border-radius: 10px;
+      display: grid;
+      place-items: center;
+      background: rgba(255,255,255,0.06);
+      border: 1px solid rgba(255,255,255,0.10);
+    }
+    #overlay .sp-iconBtn:hover { background: rgba(255,255,255,0.10); }
+    #overlay .sp-iconBtn.danger:hover { background: rgba(255,90,90,0.18); border-color: rgba(255,90,90,0.22); }
+
+    #overlay .sp-body {
+      display: grid;
+      grid-template-columns: 96px 1fr;
+      gap: 12px;
+      align-items: center;
+    }
+
+    #overlay .sp-ring {
+      width: 96px;
+      height: 96px;
+      position: relative;
+      display: grid;
+      place-items: center;
+    }
+    #overlay .sp-ring svg {
+      position: absolute;
+      inset: 0;
+      transform: rotate(-90deg);
+      overflow: visible;
+    }
+    #overlay .sp-time {
+      font-variant-numeric: tabular-nums;
+      font-weight: 800;
+      font-size: 18px;
+      letter-spacing: 0.2px;
+    }
+    #overlay .sp-label {
+      font-size: 11px;
+      opacity: 0.7;
+      margin-top: 2px;
+    }
+
+    #overlay .sp-actions {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px;
+      align-content: start;
+    }
+
+    #overlay .sp-pill {
+      height: 36px;
+      border-radius: 12px;
+      padding: 0 10px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      background: rgba(255,255,255,0.06);
+      border: 1px solid rgba(255,255,255,0.10);
+      font-weight: 700;
+      font-size: 12px;
+    }
+    #overlay .sp-pill:hover { background: rgba(255,255,255,0.10); }
+    #overlay .sp-pill.secondary { opacity: 0.9; font-weight: 700; }
+    #overlay .sp-pill.secondary:hover { background: rgba(255,255,255,0.09); }
+    #overlay .sp-pill.small { font-weight: 800; }
+
+    #overlay.sp-collapsed {
+      padding: 10px;
+      min-width: 220px;
+    }
+    #overlay.sp-collapsed .sp-body { display: none; }
+    #overlay.sp-collapsed .sp-header { margin-bottom: 0; }
+
+    /* Reduce accidental text selection / long-press menu */
+    #overlay, #overlay * { -webkit-user-select: none; user-select: none; }
+  </style>
+
+  <div class="sp-row sp-header">
+    <div class="sp-grip" data-drag-handle title="Drag overlay">⋮⋮</div>
+    <div class="sp-title">
+      <div class="name">Sleep Timer</div>
+      <div class="sub">Counts down only while playing</div>
+    </div>
+    <button id="spMinimize" class="sp-iconBtn" title="Minimize/expand">▾</button>
+    <button id="cancelTimer" class="sp-iconBtn danger" title="Cancel timer">✕</button>
+  </div>
+
+  <div class="sp-body" id="spMain">
+    <div class="sp-ring" aria-label="Timer progress">
+      <svg viewBox="0 0 52 52" width="96" height="96" aria-hidden="true">
+        <circle id="spProgressTrack" cx="26" cy="26" r="22" fill="none" stroke="rgba(255,255,255,0.14)" stroke-width="6" />
+        <circle id="spProgressCircle" cx="26" cy="26" r="22" fill="none" stroke="rgba(255,255,255,0.86)" stroke-width="6" stroke-linecap="round" />
+      </svg>
+      <div style="display:flex;flex-direction:column;align-items:center">
+        <div id="timerDisplay" class="sp-time">0:00</div>
+        <div class="sp-label">remaining</div>
+      </div>
+    </div>
+
+    <div class="sp-actions">
+      <button class="sp-pill" data-add="15" title="Add 15 minutes">+15 min</button>
+      <button class="sp-pill" data-add="30" title="Add 30 minutes">+30 min</button>
+      <button class="sp-pill" data-add="60" title="Add 60 minutes">+60 min</button>
+      <button class="sp-pill secondary" data-sub="10" title="Subtract 10 minutes">−10 min</button>
+    </div>
+  </div>
 </div>

@@ -1,35 +1,43 @@
 {
   "manifest_version": 3,
   "name": "Stream Plus",
-  "version": "2.0.0",
-  "description": "Per-show rules for Plex: auto-skip intros/credits, fade-to-sleep, episode guard, and floating timer overlay.",
-  "permissions": ["storage", "scripting", "tabs"],
-  "host_permissions": ["*://*.plex.tv/*"],
+  "version": "5.1.1",
+  "description": "Stream Plus (redesign) \u2014 overlay, sleep timer, smart skippers (including robust Next Episode), and beta helpers.",
+  "permissions": [
+    "storage",
+    "tabs"
+  ],
+  "host_permissions": [
+    "*://*.plex.tv/*"
+  ],
   "background": {
     "service_worker": "background.js"
   },
   "action": {
     "default_popup": "popup.html",
     "default_icon": {
-      "16": "icons/icon16_v2.png",
-      "32": "icons/icon48_v2.png",
-      "48": "icons/icon48_v2.png",
-      "128": "icons/icon128_v2.png"
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
     }
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
   },
   "content_scripts": [
     {
-      "matches": ["*://*.plex.tv/*"],
-      "js": ["skip.js", "outro.js", "next.js", "content.js"],
-      "css": ["styles.css"],
+      "matches": [
+        "*://*.plex.tv/*"
+      ],
+      "js": [
+        "content.js"
+      ],
       "run_at": "document_idle",
       "all_frames": true
-    }
-  ],
-  "web_accessible_resources": [
-    {
-      "resources": ["overlay.html", "icons/*.png"],
-      "matches": ["*://*.plex.tv/*"]
     }
   ],
   "options_page": "options.html"

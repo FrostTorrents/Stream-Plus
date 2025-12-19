@@ -2,123 +2,421 @@
 <html>
 <head>
   <meta charset="utf-8" />
-  <title>Stream Plus</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Stream Plus</title>
   <style>
     :root{
-      --bg:#ffffff; --panel:#f7f8fb; --text:#0b1220; --muted:#6b7280; --line:#e5e7eb;
-      --accent:#2563eb; --danger:#dc2626; --radius:12px; --shadow:0 10px 30px rgba(0,0,0,.06);
+      --bg:#0b1220;
+      --panel:#0f1a2b;
+      --panel2:#0c1625;
+      --text:#e8edf5;
+      --muted:rgba(232,237,245,.68);
+      --line:rgba(255,255,255,.10);
+      --accent:#3b82f6;
+      --good:#22c55e;
+      --bad:#ef4444;
+      --warn:#f59e0b;
+      --radius:18px;
+      --shadow:0 18px 60px rgba(0,0,0,.45);
     }
-    @media (prefers-color-scheme: dark){
+    @media (prefers-color-scheme: light){
       :root{
-        --bg:#0b1220; --panel:#121927; --text:#e8edf5; --muted:#9aa2b1; --line:#1f2736;
-        --shadow:0 8px 24px rgba(0,0,0,.35);
+        --bg:#ffffff;
+        --panel:#f7f8fb;
+        --panel2:#ffffff;
+        --text:#0b1220;
+        --muted:#6b7280;
+        --line:#e5e7eb;
+        --shadow:0 14px 40px rgba(0,0,0,.10);
       }
     }
     html,body{margin:0;padding:0}
     body{
-      width:360px; background:var(--bg); color:var(--text);
-      font:14px/1.45 ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial;
+      width:380px;
+      background: radial-gradient(1200px 600px at 20% -10%, rgba(59,130,246,.20), transparent 55%),
+                  radial-gradient(900px 500px at 110% 20%, rgba(34,197,94,.14), transparent 55%),
+                  var(--bg);
+      color:var(--text);
+      font: 13.5px/1.4 ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial;
     }
-    header{padding:12px}
-    .title{display:flex;align-items:center;gap:8px;font-weight:800;font-size:18px}
-    .chip{font-size:11px;font-weight:700;padding:2px 6px;border-radius:999px;border:1px solid var(--line);color:var(--muted)}
-    .subtitle{color:var(--muted);font-size:12px;margin-top:4px}
-    .tabs{display:flex;gap:16px;padding:10px 12px 0;border-bottom:1px solid var(--line)}
-    .tab{position:relative;padding:8px 0;cursor:pointer;color:var(--muted);font-weight:700;user-select:none}
-    .tab.active{color:var(--text)}
-    .tab.active::after{content:"";position:absolute;left:0;right:0;bottom:-1px;height:2px;background:var(--accent);border-radius:2px}
-    .panel{display:none;padding:12px}
+    header{padding:14px 14px 10px}
+    .toprow{display:flex;align-items:center;justify-content:space-between;gap:10px}
+    .brand{display:flex;align-items:center;gap:10px}
+    .logo{
+      width:28px;height:28px;border-radius:10px;
+      background: linear-gradient(135deg, rgba(59,130,246,.95), rgba(34,197,94,.85));
+      box-shadow: 0 10px 24px rgba(0,0,0,.25);
+    }
+    .title{font-weight:900;font-size:16px;letter-spacing:.2px}
+    .series{margin-top:6px;color:var(--muted);font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .chips{display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end}
+    .chip{
+      display:inline-flex;align-items:center;gap:6px;
+      padding:5px 8px;border-radius:999px;
+      border:1px solid var(--line);
+      background:rgba(255,255,255,.04);
+      font-size:11px;font-weight:800;color:var(--muted);
+    }
+    .dot{width:7px;height:7px;border-radius:999px;background:var(--muted)}
+    .dot.good{background:var(--good)}
+    .dot.bad{background:var(--bad)}
+    .dot.warn{background:var(--warn)}
+    nav{padding:0 10px 10px}
+    .tabs{
+      display:flex;gap:6px;
+      padding:6px;
+      border:1px solid var(--line);
+      border-radius:999px;
+      background:rgba(255,255,255,.03);
+      box-shadow: var(--shadow);
+    }
+    .tab{
+      flex:1;
+      text-align:center;
+      padding:8px 10px;
+      border-radius:999px;
+      cursor:pointer;
+      user-select:none;
+      color:var(--muted);
+      font-weight:900;
+      letter-spacing:.15px;
+      transition: all .14s ease;
+    }
+    .tab.active{
+      color:var(--text);
+      background: linear-gradient(135deg, rgba(59,130,246,.35), rgba(255,255,255,.04));
+      border:1px solid rgba(255,255,255,.12);
+    }
+    main{padding:0 14px 14px}
+    .panel{display:none}
     .panel.active{display:block}
-    .card{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow);padding:14px;margin-bottom:12px}
-    .card h2{margin:0 0 10px;font-size:16px}
-    .muted{color:var(--muted);font-size:12px}
-    .row{display:flex;align-items:center;gap:10px;margin:10px 0}
-    .grid{display:grid;grid-template-columns:1fr 120px;gap:10px;align-items:center}
-    input[type="number"]{width:120px;padding:8px 10px;border-radius:10px;border:1px solid var(--line);background:transparent;color:inherit;outline:none}
-    input[type="checkbox"]{accent-color:var(--accent)}
-    .btn{border:1px solid var(--line);background:transparent;color:inherit;padding:8px 12px;border-radius:999px;cursor:pointer;font-weight:800;transition:background .15s,border-color .15s,transform .05s}
-    .btn:hover{background:rgba(0,0,0,.04)}
-    @media (prefers-color-scheme: dark){ .btn:hover{background:rgba(255,255,255,.06)} }
-    .btn.primary{background:var(--accent); color:#fff; border-color:var(--accent)}
-    .btn.danger{color:var(--danger);border-color:rgba(220,38,38,.4)}
-    .timer-controls{display:flex;gap:8px;flex-wrap:wrap}
-    .timer-controls .btn{min-width:66px}
-    .actions{display:flex;gap:8px;align-items:center;margin-top:6px}
-    .status{font-size:12px;color:var(--muted)}
-    footer{display:flex;align-items:center;justify-content:space-between;padding:10px 12px;border-top:1px solid var(--line)}
-    .coffee{display:inline-flex;gap:8px;align-items:center;text-decoration:none;padding:8px 12px;border-radius:10px;font-weight:900;border:1px solid #c7d2fe;background:#eef2ff;color:#0b1220}
-    @media (prefers-color-scheme: dark){ .coffee{background:#1a2337;border-color:#2a3653;color:#e8edf5} }
+    .card{
+      background: linear-gradient(180deg, rgba(255,255,255,.05), rgba(255,255,255,.02));
+      border:1px solid var(--line);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+      padding:14px;
+      margin-top:12px;
+    }
+    .card h2{margin:0 0 10px;font-size:14px;font-weight:1000;letter-spacing:.2px}
+    .row{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:10px 0}
+    .row .label{font-weight:800}
+    .row .hint{color:var(--muted);font-size:11.5px;margin-top:3px}
+    .stack{display:flex;flex-direction:column}
+    .btnrow{display:flex;gap:8px;flex-wrap:wrap}
+    button{
+      border:1px solid var(--line);
+      background:rgba(255,255,255,.05);
+      color:var(--text);
+      padding:9px 10px;
+      border-radius:14px;
+      font-weight:900;
+      cursor:pointer;
+      transition: transform .06s ease, background .12s ease;
+    }
+    button:hover{background:rgba(255,255,255,.09)}
+    button:active{transform: translateY(0.5px)}
+    button.danger{border-color:rgba(239,68,68,.35);background:rgba(239,68,68,.10)}
+    button.ghost{background:transparent}
+    .toggle{
+      display:inline-flex;align-items:center;gap:10px;
+    }
+    input[type="checkbox"]{width:18px;height:18px;accent-color:var(--accent)}
+    input[type="number"], select{
+      width: 128px;
+      padding:8px 10px;border-radius:12px;
+      border:1px solid var(--line);
+      background:rgba(255,255,255,.03);
+      color:var(--text);
+      outline:none;
+      font-weight:800;
+    }
+    select{width: 150px}
+    .mono{font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace}
+    .fine{color:var(--muted);font-size:11px}
+    .divider{height:1px;background:var(--line);margin:10px 0}
+    a{color:var(--accent);text-decoration:none;font-weight:800}
   </style>
 </head>
 <body>
   <header>
-    <div class="title">Stream Plus <span class="chip">v1.0</span></div>
-    <div class="subtitle">Series: <span id="seriesName">—</span></div>
+    <div class="toprow">
+      <div class="brand">
+        <div class="logo"></div>
+        <div>
+          <div class="title">Stream Plus</div>
+          <div id="seriesLine" class="series">—</div>
+        </div>
+      </div>
+
+      <div class="chips">
+        <div class="chip" title="Automation">
+          <span id="autoDot" class="dot"></span>
+          <span id="autoChip">Automation</span>
+        </div>
+        <div class="chip" title="Overlay">
+          <span id="overlayDot" class="dot"></span>
+          <span id="overlayChip">Overlay</span>
+        </div>
+        <div class="chip" title="Timer">
+          <span id="timerDot" class="dot"></span>
+          <span id="timerChip" class="mono">—</span>
+        </div>
+      </div>
+    </div>
   </header>
 
-  <nav class="tabs">
-    <div class="tab active" data-tab="sleeper">Sleeper</div>
-    <div class="tab" data-tab="skipper">Skipper</div>
-    <div class="tab" data-tab="global">Global</div>
+  <nav>
+    <div class="tabs">
+      <div class="tab active" data-tab="now">Now</div>
+      <div class="tab" data-tab="timer">Timer</div>
+      <div class="tab" data-tab="auto">Automation</div>
+      <div class="tab" data-tab="beta">Beta</div>
+      <div class="tab" data-tab="global">Global</div>
+    </div>
   </nav>
 
-  <!-- Sleeper -->
-  <section id="panel-sleeper" class="panel active">
-    <div class="card">
-      <h2>Sleep Timer</h2>
-      <div class="row"><label><input type="checkbox" id="countdownVisible"> Show floating timer overlay</label></div>
-      <div class="timer-controls">
-        <button class="btn" data-add="15">+15m</button>
-        <button class="btn" data-add="30">+30m</button>
-        <button class="btn" data-add="60">+60m</button>
-        <button class="btn" id="sub10">−10m</button>
-        <button class="btn danger" id="cancel">Cancel</button>
+  <main>
+    <section class="panel active" id="panel-now">
+      <div class="card">
+        <h2>Quick actions</h2>
+        <div class="btnrow">
+          <button id="btnSkipIntro">Skip Intro</button>
+          <button id="btnSkipCredits">Skip Credits</button>
+          <button id="btnNext">Next Episode</button>
+          <button id="btnToggleAuto" class="ghost">Toggle Automation</button>
+        </div>
+        <div class="divider"></div>
+        <div class="fine">
+          If Plex moves UI around, these buttons still work because they search for visible on-screen buttons.
+        </div>
       </div>
-    </div>
-  </section>
 
-  <!-- Skipper -->
-  <section id="panel-skipper" class="panel">
-    <div class="card">
-      <h2>Per-Show Rules</h2>
-      <div class="row"><label><input type="checkbox" id="skipIntro"> Skip Intro</label></div>
-      <div class="row"><label><input type="checkbox" id="skipCredits"> Skip Credits</label></div>
-      <div class="row"><label><input type="checkbox" id="lowerVolume"> Lower volume in credits</label></div>
-      <div class="row" style="justify-content:space-between">
-        <span id="disableHint" class="muted"></span>
-        <button id="toggleDisableSeries" class="btn danger">🚫 Disable this series</button>
+      <div class="card">
+        <h2>This series</h2>
+        <div class="row">
+          <div class="stack">
+            <div class="label">Skip Intro / Recap</div>
+            <div class="hint">Per-series override</div>
+          </div>
+          <label class="toggle"><input type="checkbox" id="seriesSkipIntro" /></label>
+        </div>
+        <div class="row">
+          <div class="stack">
+            <div class="label">Skip Credits / Outro</div>
+            <div class="hint">Per-series override</div>
+          </div>
+          <label class="toggle"><input type="checkbox" id="seriesSkipCredits" /></label>
+        </div>
+        <div class="row">
+          <div class="stack">
+            <div class="label">Auto Next Episode</div>
+            <div class="hint">Clicks “Next Episode” when available</div>
+          </div>
+          <label class="toggle"><input type="checkbox" id="seriesNextEpisode" /></label>
+        </div>
+        <div class="fine mono" id="seriesKeyLine">key: —</div>
       </div>
-    </div>
-  </section>
+    </section>
 
-  <!-- Global -->
-  <section id="panel-global" class="panel">
-    <div class="card">
-      <h2>Global</h2>
-      <p class="muted">Applies to all skippers & the sleep timer.</p>
-      <div class="row"><label><input type="checkbox" id="globalEnabled"> Enable all automation</label></div>
-      <div class="row grid">
-        <label for="skipDelayMs">Delay (ms) before clicking</label>
-        <input type="number" id="skipDelayMs" min="0" step="50" />
+    <section class="panel" id="panel-timer">
+      <div class="card">
+        <h2>Sleep timer</h2>
+        <div class="btnrow">
+          <button id="tAdd15">+15m</button>
+          <button id="tAdd30">+30m</button>
+          <button id="tAdd60">+60m</button>
+          <button id="tSub10">−10m</button>
+          <button id="tCancel" class="danger">Cancel</button>
+        </div>
+        <div class="divider"></div>
+        <div class="row">
+          <div class="stack">
+            <div class="label">Show floating timer overlay</div>
+            <div class="hint">Optional. Timer works even if this is off.</div>
+          </div>
+          <label class="toggle"><input type="checkbox" id="showOverlay" /></label>
+        </div>
+        <div class="row">
+          <div class="stack">
+            <div class="label">Mute instead of pause</div>
+            <div class="hint">When timer ends</div>
+          </div>
+          <label class="toggle"><input type="checkbox" id="muteInstead" /></label>
+        </div>
+        <div class="row">
+          <div class="stack">
+            <div class="label">Dim screen on end</div>
+            <div class="hint">Adds a dark overlay when the timer finishes</div>
+          </div>
+          <label class="toggle"><input type="checkbox" id="dimEnd" /></label>
+        </div>
       </div>
-      <div class="row grid">
-        <label for="volumeLevel">Volume level (%)</label>
-        <input type="number" id="volumeLevel" min="0" max="100" step="5" />
-      </div>
-      <div class="row"><label><input type="checkbox" id="muteInsteadOfPause"> Mute instead of pause on timer end</label></div>
-      <div class="row"><label><input type="checkbox" id="dimScreen"> Dim screen on timer end</label></div>
-      <div class="actions">
-        <button id="saveGlobal" class="btn primary">Save</button>
-        <span id="saveStatus" class="status"></span>
-      </div>
-    </div>
-  </section>
+    </section>
 
-  <footer>
-    <span class="muted">Stream Plus</span>
-    <a class="coffee" href="https://square.link/u/JZUUls2L" target="_blank" rel="noopener">☕ Buy me a coffee</a>
-  </footer>
+    <section class="panel" id="panel-auto">
+      <div class="card">
+        <h2>Automation</h2>
+        <div class="row">
+          <div class="stack">
+            <div class="label">Enable all automation</div>
+            <div class="hint">Skippers + next episode + beta automation</div>
+          </div>
+          <label class="toggle"><input type="checkbox" id="globalEnabled" /></label>
+        </div>
+
+        <div class="row">
+          <div class="stack">
+            <div class="label">Delay before clicking (ms)</div>
+            <div class="hint">Useful if Plex buttons appear slightly late</div>
+          </div>
+          <input type="number" id="delayMs" min="0" max="5000" step="50" />
+        </div>
+
+        <div class="fine">
+          Tip: If Plex changes the Skip button label, open the overlay and use the manual buttons.
+        </div>
+      </div>
+    </section>
+
+    <section class="panel" id="panel-beta">
+      <div class="card">
+        <h2>Beta</h2>
+        <div class="row">
+          <div class="stack">
+            <div class="label">Enable beta features</div>
+            <div class="hint">Only enables the toggles below</div>
+          </div>
+          <label class="toggle"><input type="checkbox" id="betaEnabled" /></label>
+        </div>
+
+        <div class="divider"></div>
+
+        <div class="row">
+          <div class="stack">
+            <div class="label">Auto-start timer on play</div>
+            <div class="hint">Starts once per session if no timer is running</div>
+          </div>
+          <label class="toggle"><input type="checkbox" id="betaAutoStartTimer" /></label>
+        </div>
+        <div class="row">
+          <div class="stack">
+            <div class="label">Auto-start minutes</div>
+            <div class="hint">Default timer length</div>
+          </div>
+          <input type="number" id="betaAutoStartMins" min="5" max="360" step="5" />
+        </div>
+
+        <div class="divider"></div>
+
+        <div class="row">
+          <div class="stack">
+            <div class="label">Fade volume before timer ends</div>
+            <div class="hint">Smoothly lowers volume in the last seconds</div>
+          </div>
+          <label class="toggle"><input type="checkbox" id="betaFade" /></label>
+        </div>
+        <div class="row">
+          <div class="stack">
+            <div class="label">Fade seconds</div>
+            <div class="hint">How long the fade lasts</div>
+          </div>
+          <input type="number" id="betaFadeSec" min="3" max="180" step="1" />
+        </div>
+
+        <div class="divider"></div>
+
+        <div class="row">
+          <div class="stack">
+            <div class="label">Remember playback speed</div>
+            <div class="hint">Stores last speed you used</div>
+          </div>
+          <label class="toggle"><input type="checkbox" id="betaRememberSpeed" /></label>
+        </div>
+        <div class="row">
+          <div class="stack">
+            <div class="label">Default speed</div>
+            <div class="hint">Used when there’s no saved speed</div>
+          </div>
+          <input type="number" id="betaDefaultSpeed" min="0.25" max="3" step="0.05" />
+        </div>
+
+        <div class="divider"></div>
+
+        <div class="row">
+          <div class="stack">
+            <div class="label">Subtitles default</div>
+            <div class="hint">Auto keeps Plex’s choice</div>
+          </div>
+          <select id="betaSubs">
+            <option value="auto">Auto</option>
+            <option value="on">On</option>
+            <option value="off">Off</option>
+          </select>
+        </div>
+
+        <div class="divider"></div>
+
+        <div class="row">
+          <div class="stack">
+            <div class="label">Prevent screen sleep (Wake Lock)</div>
+            <div class="hint">Keeps the display awake while playing (if supported)</div>
+          </div>
+          <label class="toggle"><input type="checkbox" id="betaWakeLock" /></label>
+        </div>
+
+        <div class="row">
+          <div class="stack">
+            <div class="label">Pause when tab is hidden</div>
+            <div class="hint">If you switch away, pauses after a delay</div>
+          </div>
+          <label class="toggle"><input type="checkbox" id="betaPauseHidden" /></label>
+        </div>
+        <div class="row">
+          <div class="stack">
+            <div class="label">Hidden delay (sec)</div>
+            <div class="hint">Wait before pausing</div>
+          </div>
+          <input type="number" id="betaPauseHiddenSec" min="3" max="600" step="1" />
+        </div>
+
+        <div class="divider"></div>
+
+        <div class="row">
+          <div class="stack">
+            <div class="label">Auto-fullscreen on play</div>
+            <div class="hint">Best effort (browser may block)</div>
+          </div>
+          <label class="toggle"><input type="checkbox" id="betaFullscreen" /></label>
+        </div>
+
+        <div class="row">
+          <div class="stack">
+            <div class="label">Auto-click “Continue Watching”</div>
+            <div class="hint">Dismisses inactivity prompts</div>
+          </div>
+          <label class="toggle"><input type="checkbox" id="betaContinue" /></label>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel" id="panel-global">
+      <div class="card">
+        <h2>Global</h2>
+        <div class="row">
+          <div class="stack">
+            <div class="label">Volume level (%)</div>
+            <div class="hint">Reserved for future features (kept for compatibility)</div>
+          </div>
+          <input type="number" id="volumeLevel" min="0" max="100" step="1" />
+        </div>
+        <div class="fine">
+          Want deeper controls? Open the full options page:
+          <a href="#" id="openOptions">Options</a>
+        </div>
+      </div>
+    </section>
+  </main>
 
   <script src="popup.js"></script>
 </body>

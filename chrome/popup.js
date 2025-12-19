@@ -1,208 +1,328 @@
-// popup.js — three tabs: Sleeper / Skipper / Global (with explicit Save for Global)
+// popup.js — Stream Plus v5
+// Redesigned popup with Now/Timer/Automation/Beta/Global tabs.
 
-let currentSeriesDisplay = 'Unknown Series';
-let currentSeriesKey = 'unknown';
+const SYNC_KEYS = [
+  "perShowRules",
+  "globalEnabled",
+  "skipDelayMs",
+  "volumeLevel",
+  "muteInsteadOfPause",
+  "dimScreen",
+  "countdownVisible",
+  "beta"
+];
 
-document.addEventListener('DOMContentLoaded', init);
+const DEFAULTS = {
+  perShowRules: {},
+  globalEnabled: true,
+  skipDelayMs: 500,
+  volumeLevel: 50,
+  muteInsteadOfPause: false,
+  dimScreen: true,
+  countdownVisible: false,
+  beta: {
+    enabled: false,
+    wakeLock: false,
+    pauseOnHidden: false,
+    pauseOnHiddenSec: 10,
+    autoFullscreen: false,
+    autoStartTimerOnPlay: false,
+    autoStartTimerMinutes: 30,
+    fadeBeforeTimerEnd: true,
+    fadeSeconds: 20,
+    rememberSpeed: true,
+    defaultSpeed: 1.0,
+    subtitlesDefault: "auto",
+    autoContinueWatching: true
+  }
+};
 
-async function init() {
-  wireTabs(['sleeper','skipper','global']);
+let activeSeriesKey = "unknown";
+let activeSeriesTitle = "Unknown";
 
-  const settings = await getSettings();
+document.addEventListener("DOMContentLoaded", init);
 
-  // resolve series
-  const fromLocal = await readActiveSeriesFromLocal();
-  currentSeriesDisplay = fromLocal?.title || (await resolvePlexSeriesViaTab()) || 'Unknown Series';
-  currentSeriesKey = normalizeTitle(canonicalizeSeriesTitle(currentSeriesDisplay));
-  setText('seriesName', currentSeriesDisplay);
+function $(id) { return document.getElementById(id); }
 
-  const s = withDefaults(settings);
-
-  // ---- Sleeper ----
-  setChecked('countdownVisible', !!s.countdownVisible);
-  onChange('countdownVisible', async () => {
-    const show = getChecked('countdownVisible');
-    await updateSetting('countdownVisible', show);
-    sendToActiveTab({ type: 'overlay:toggle', show });
-  });
-  for (const el of document.querySelectorAll('[data-add]')) {
-    el.addEventListener('click', (e) => {
-      e.preventDefault();
-      sendToActiveTab({ type: 'timer:add', minutes: parseInt(el.dataset.add, 10) });
+function wireTabs() {
+  document.querySelectorAll(".tab").forEach(t => {
+    t.addEventListener("click", () => {
+      document.querySelectorAll(".tab").forEach(x => x.classList.remove("active"));
+      t.classList.add("active");
+      const key = t.dataset.tab;
+      document.querySelectorAll(".panel").forEach(p => p.classList.remove("active"));
+      $(`panel-${key}`).classList.add("active");
     });
-  }
-  $('sub10').addEventListener('click', (e) => { e.preventDefault(); sendToActiveTab({ type: 'timer:sub', minutes: 10 }); });
-  $('cancel').addEventListener('click', (e) => { e.preventDefault(); sendToActiveTab({ type: 'timer:cancel' }); });
+  });
+}
 
-  // ---- Global (explicit SAVE) ----
-  setChecked('globalEnabled', !!s.globalEnabled);
-  setValue('skipDelayMs', s.skipDelayMs);
-  setValue('volumeLevel', s.volumeLevel);
-  setChecked('muteInsteadOfPause', !!s.muteInsteadOfPause);
-  setChecked('dimScreen', !!s.dimScreen);
+async function getActiveTab() {
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  return tab;
+}
 
-  $('saveGlobal').addEventListener('click', async () => {
-    const statusEl = $('saveStatus');
-    statusEl.textContent = 'Saving…';
-
-    // read values
-    const payload = {
-      globalEnabled: getChecked('globalEnabled'),
-      skipDelayMs: clampInt($('skipDelayMs').value, 0, 10000, 500),
-      volumeLevel: clampInt($('volumeLevel').value, 0, 100, 50),
-      muteInsteadOfPause: getChecked('muteInsteadOfPause'),
-      dimScreen: getChecked('dimScreen'),
-    };
-
+function sendToActiveTab(msg) {
+  return new Promise(async (resolve) => {
     try {
-      await Promise.all(Object.entries(payload).map(([k, v]) => updateSetting(k, v)));
-      statusEl.textContent = 'Saved ✓';
-      setTimeout(() => statusEl.textContent = '', 1400);
-    } catch (e) {
-      statusEl.textContent = 'Failed to save';
-      console.error('[Popup] Save error', e);
+      const tab = await getActiveTab();
+      if (!tab?.id) return resolve(null);
+      chrome.tabs.sendMessage(tab.id, msg, (res) => resolve(res || null));
+    } catch {
+      resolve(null);
     }
   });
+}
 
-  // ---- Skipper (per-show rules) ----
-  const rules = ensureDefaultRules((s.perShowRulesByKey || {})[currentSeriesKey]);
-  setChecked('skipIntro', !!rules.skipIntro);
-  setChecked('skipCredits', !!rules.skipCredits);
-  setChecked('lowerVolume', !!rules.lowerVolume);
-  ['skipIntro','skipCredits','lowerVolume'].forEach(id => onChange(id, persistPerShow));
+async function getSync() {
+  const raw = await new Promise((resolve) => chrome.storage.sync.get(SYNC_KEYS, resolve));
+  const merged = {
+    ...DEFAULTS,
+    ...raw,
+    beta: { ...DEFAULTS.beta, ...(raw.beta || {}) },
+    perShowRules: raw.perShowRules || {}
+  };
+  return merged;
+}
+async function setSync(obj) {
+  return new Promise((resolve) => chrome.storage.sync.set(obj, resolve));
+}
+async function getLocal() {
+  return new Promise((resolve) => chrome.storage.local.get(["activeSeriesKey","activeSeriesTitle"], resolve));
+}
 
-  const disabledSet = new Set(s.disabledSeriesKeys || []);
-  paintDisableUI(disabledSet.has(currentSeriesKey));
-  $('toggleDisableSeries').addEventListener('click', toggleDisableSeries);
+function fmtTime(sec) {
+  sec = Math.max(0, Math.floor(sec || 0));
+  const h = Math.floor(sec / 3600);
+  const m = Math.floor((sec % 3600) / 60);
+  const s = sec % 60;
+  if (h > 0) return `${h}:${String(m).padStart(2,"0")}:${String(s).padStart(2,"0")}`;
+  return `${m}:${String(s).padStart(2,"0")}`;
+}
 
-  async function persistPerShow() {
-    const fresh = withDefaults(await getSettings());
-    const allByKey = fresh.perShowRulesByKey || {};
-    const prev = ensureDefaultRules(allByKey[currentSeriesKey]);
-    const updated = {
-      ...prev,
-      skipIntro: getChecked('skipIntro'),
-      skipCredits: getChecked('skipCredits'),
-      lowerVolume: getChecked('lowerVolume'),
-    };
-    allByKey[currentSeriesKey] = updated;
+function setDot(el, mode) {
+  el.classList.remove("good","bad","warn");
+  if (mode) el.classList.add(mode);
+}
 
-    const byDisplay = fresh.perShowRules || {};
-    byDisplay[currentSeriesDisplay] = updated;
+async function refreshChips(settings) {
+  const st = await sendToActiveTab({ type: "sp:state:get" });
+  // automation
+  $("autoChip").textContent = settings.globalEnabled ? "Automation" : "Automation off";
+  setDot($("autoDot"), settings.globalEnabled ? "good" : "bad");
 
-    await updateSetting('perShowRulesByKey', allByKey);
-    await updateSetting('perShowRules', byDisplay);
+  // overlay
+  $("overlayChip").textContent = settings.countdownVisible ? "Overlay" : "Overlay off";
+  setDot($("overlayDot"), settings.countdownVisible ? "good" : "bad");
+
+  // timer
+  if (st && st.timerRunning) {
+    $("timerChip").textContent = fmtTime(st.timerRemainingSec);
+    setDot($("timerDot"), st.timerRemainingSec <= 60 ? "warn" : "good");
+  } else {
+    $("timerChip").textContent = "—";
+    setDot($("timerDot"), "bad");
   }
 
-  async function toggleDisableSeries() {
-    const fresh = withDefaults(await getSettings());
-    const set = new Set(fresh.disabledSeriesKeys || []);
-    const willDisable = !set.has(currentSeriesKey);
-
-    if (willDisable) {
-      set.add(currentSeriesKey);
-      setChecked('skipIntro', false);
-      setChecked('skipCredits', false);
-    } else {
-      set.delete(currentSeriesKey);
-      if (!getChecked('skipIntro') && !getChecked('skipCredits')) {
-        setChecked('skipIntro', true);
-        setChecked('skipCredits', true);
-      }
-    }
-    await updateSetting('disabledSeriesKeys', Array.from(set));
-
-    const byKey = fresh.perShowRulesByKey || {};
-    if (!byKey[currentSeriesKey]) {
-      byKey[currentSeriesKey] = ensureDefaultRules(null);
-      await updateSetting('perShowRulesByKey', byKey);
-    }
-    paintDisableUI(willDisable);
-  }
+  // series line
+  const title = (st?.seriesTitle || activeSeriesTitle || "Unknown").trim();
+  $("seriesLine").textContent = title;
+  activeSeriesKey = st?.seriesKey || activeSeriesKey || "unknown";
+  $("seriesKeyLine").textContent = `key: ${activeSeriesKey}`;
 }
 
-/* ---------- Tabs ---------- */
-function wireTabs(names){
-  const tabs = names.map(n => ({ btn: document.querySelector(`.tab[data-tab="${n}"]`), pnl: $(`panel-${n}`) }));
-  tabs.forEach(({btn}) => btn.addEventListener('click', () => {
-    tabs.forEach(({btn,pnl}) => { btn.classList.remove('active'); pnl.classList.remove('active'); });
-    const t = tabs.find(x => x.btn === btn);
-    btn.classList.add('active'); t.pnl.classList.add('active');
-  }));
-}
-
-/* ---------- Helpers ---------- */
-function clampInt(v, min, max, fallback){
-  const n = parseInt(v, 10);
-  if (Number.isFinite(n)) return Math.max(min, Math.min(max, n));
-  return fallback;
-}
-
-function withDefaults(s = {}) {
+function currentRules(settings) {
+  const r = (settings.perShowRules || {})[activeSeriesKey] || {};
   return {
-    globalEnabled: s.globalEnabled !== false,
-    skipDelayMs: Number.isFinite(s.skipDelayMs) ? s.skipDelayMs : 500,
-    volumeLevel: Number.isFinite(s.volumeLevel) ? s.volumeLevel : 50,
-    muteInsteadOfPause: !!s.muteInsteadOfPause,
-    dimScreen: !!s.dimScreen,
-    countdownVisible: !!s.countdownVisible,
-    perShowRulesByKey: s.perShowRulesByKey || {},
-    perShowRules: s.perShowRules || {},
-    disabledSeriesKeys: s.disabledSeriesKeys || []
+    skipIntro: r.skipIntro ?? true,
+    skipCredits: r.skipCredits ?? true,
+    nextEpisode: r.nextEpisode ?? true
   };
 }
-function ensureDefaultRules(r){ const b=r||{}; return { skipIntro:b.skipIntro!==false, skipCredits:b.skipCredits!==false, lowerVolume:!!b.lowerVolume, playNext:b.playNext!==false }; }
-function canonicalizeSeriesTitle(s){ let t=(s||'').trim(); t=t.replace(/\s*[-–—]\s*S\d+\s*[·x×]?\s*E\d+\s*$/i,''); t=t.replace(/\s*\(\s*S\d+\s*[·x×]?\s*E\d+\s*\)\s*$/i,''); t=t.replace(/\s*\bS(?:eason)?\s*\d+\s*[·x×.]?\s*E(?:pisode)?\s*\d+\b.*$/i,''); t=t.replace(/\s*\bS\d+\s*E\d+\b.*$/i,''); t=t.replace(/\s*[-–—]\s*Season\s*\d+\s*Episode\s*\d+\s*$/i,''); t=t.replace(/\s*\bSeason\s*\d+\s*Episode\s*\d+\b.*$/i,''); return t.trim(); }
-function normalizeTitle(s){ return (s||'').toLowerCase().replace(/\s+/g,' ').replace(/[^\p{L}\p{N}\s]+/gu,'').trim(); }
-function paintDisableUI(disabled){
-  const btn=$('toggleDisableSeries'), hint=$('disableHint');
-  const lock = on => ['skipIntro','skipCredits','lowerVolume'].forEach(id => { $(id).disabled = on; });
-  if(disabled){ btn.textContent='✅ Enable this series'; btn.classList.remove('danger'); hint.textContent='This series is disabled'; lock(true); }
-  else{ btn.textContent='🚫 Disable this series'; btn.classList.add('danger'); hint.textContent=''; lock(false); }
+
+async function init() {
+  wireTabs();
+
+  // pull last-known series from local storage (content script keeps it updated)
+  const loc = await getLocal();
+  activeSeriesKey = loc.activeSeriesKey || "unknown";
+  activeSeriesTitle = loc.activeSeriesTitle || "Unknown";
+  $("seriesLine").textContent = activeSeriesTitle;
+  $("seriesKeyLine").textContent = `key: ${activeSeriesKey}`;
+
+  // load settings
+  const settings = await getSync();
+
+  // populate UI
+  await refreshChips(settings);
+
+  // quick actions
+  $("btnSkipIntro").addEventListener("click", () => sendToActiveTab({ type: "sp:action", kind: "intro" }));
+  $("btnSkipCredits").addEventListener("click", () => sendToActiveTab({ type: "sp:action", kind: "credits" }));
+  $("btnNext").addEventListener("click", () => sendToActiveTab({ type: "sp:action", kind: "next" }));
+  $("btnToggleAuto").addEventListener("click", async () => {
+    const cur = await getSync();
+    await setSync({ globalEnabled: !cur.globalEnabled });
+    await sendToActiveTab({ type: "sp:automation:set", enabled: !cur.globalEnabled });
+    const s2 = await getSync();
+    await refreshChips(s2);
+    populatePerSeries(s2);
+  });
+
+  // timer buttons
+  $("tAdd15").addEventListener("click", () => sendToActiveTab({ type: "sp:timer:add", seconds: 15*60 }));
+  $("tAdd30").addEventListener("click", () => sendToActiveTab({ type: "sp:timer:add", seconds: 30*60 }));
+  $("tAdd60").addEventListener("click", () => sendToActiveTab({ type: "sp:timer:add", seconds: 60*60 }));
+  $("tSub10").addEventListener("click", () => sendToActiveTab({ type: "sp:timer:add", seconds: -10*60 }));
+  $("tCancel").addEventListener("click", () => sendToActiveTab({ type: "sp:timer:cancel" }));
+
+  // global toggles / values
+  $("showOverlay").checked = !!settings.countdownVisible;
+  $("showOverlay").addEventListener("change", async (e) => {
+    const v = !!e.target.checked;
+    await setSync({ countdownVisible: v });
+    await sendToActiveTab({ type: "sp:overlay:set", visible: v });
+    await refreshChips(await getSync());
+  });
+
+  $("muteInstead").checked = !!settings.muteInsteadOfPause;
+  $("muteInstead").addEventListener("change", async (e) => {
+    await setSync({ muteInsteadOfPause: !!e.target.checked });
+  });
+
+  $("dimEnd").checked = !!settings.dimScreen;
+  $("dimEnd").addEventListener("change", async (e) => {
+    await setSync({ dimScreen: !!e.target.checked });
+  });
+
+  $("globalEnabled").checked = !!settings.globalEnabled;
+  $("globalEnabled").addEventListener("change", async (e) => {
+    const v = !!e.target.checked;
+    await setSync({ globalEnabled: v });
+    await sendToActiveTab({ type: "sp:automation:set", enabled: v });
+    await refreshChips(await getSync());
+  });
+
+  $("delayMs").value = Number(settings.skipDelayMs ?? 500);
+  $("delayMs").addEventListener("change", async (e) => {
+    const v = Math.max(0, Math.min(5000, Number(e.target.value || 0)));
+    e.target.value = v;
+    await setSync({ skipDelayMs: v });
+  });
+
+  $("volumeLevel").value = Number(settings.volumeLevel ?? 50);
+  $("volumeLevel").addEventListener("change", async (e) => {
+    const v = Math.max(0, Math.min(100, Number(e.target.value || 0)));
+    e.target.value = v;
+    await setSync({ volumeLevel: v });
+  });
+
+  // per-series toggles
+  populatePerSeries(settings);
+
+  $("seriesSkipIntro").addEventListener("change", async (e) => setPerSeriesRule("skipIntro", !!e.target.checked));
+  $("seriesSkipCredits").addEventListener("change", async (e) => setPerSeriesRule("skipCredits", !!e.target.checked));
+  $("seriesNextEpisode").addEventListener("change", async (e) => setPerSeriesRule("nextEpisode", !!e.target.checked));
+
+  // beta
+  populateBeta(settings);
+  bindBetaHandlers();
+
+  // open options
+  $("openOptions").addEventListener("click", (e) => {
+    e.preventDefault();
+    chrome.runtime.openOptionsPage();
+  });
+
+  // refresh chips periodically (so timer updates while popup open)
+  setInterval(async () => {
+    const s = await getSync();
+    await refreshChips(s);
+  }, 900);
 }
 
-/* ---------- Chrome plumbing ---------- */
-function getSettings(){ return new Promise(r => chrome.runtime.sendMessage({type:'getSettings'}, r)); }
-function updateSetting(key,value){ return new Promise(r => chrome.runtime.sendMessage({type:'updateSetting', key, value}, () => r())); }
-function readActiveSeriesFromLocal(){ return new Promise(r => chrome.storage.local.get(['activeSeriesTitle','activeSeriesKey'], v => r({title:v.activeSeriesTitle,key:v.activeSeriesKey}))); }
-async function resolvePlexSeriesViaTab(){ try{ const tabs=await queryTabs('*://*.plex.tv/*'); if(!tabs.length) return null; const active=tabs.find(t=>t.active)||tabs[0]; return await execInTab(active.id, () => { const pick=(...ss)=>{for(const s of ss){const el=document.querySelector(s); if(el&&el.textContent) return el.textContent.trim();} return null;}; return pick('[data-testid="metadataGrandparentTitle"]','[data-qa-id="metadataGrandparentTitle"]','.PrePlayTitle .grandparent-title','[data-testid="metadata-title"]') || (document.title||'').replace(/\s+-\s*Plex.*/i,'').trim() || 'Unknown Series'; }); } catch { return null; } }
-function queryTabs(url){ return new Promise(r => chrome.tabs.query({url}, r)); }
-function execInTab(tabId, func){ return new Promise(r => chrome.scripting.executeScript({target:{tabId}, func}, res => r(res?.[0]?.result || null))); }
+function populatePerSeries(settings) {
+  const r = currentRules(settings);
+  $("seriesSkipIntro").checked = !!r.skipIntro;
+  $("seriesSkipCredits").checked = !!r.skipCredits;
+  $("seriesNextEpisode").checked = !!r.nextEpisode;
+}
 
+async function setPerSeriesRule(key, val) {
+  const settings = await getSync();
+  const per = settings.perShowRules || {};
+  const cur = per[activeSeriesKey] || {};
+  per[activeSeriesKey] = { ...cur, [key]: val };
+  await setSync({ perShowRules: per });
+}
 
+function populateBeta(settings) {
+  const b = settings.beta || DEFAULTS.beta;
+  $("betaEnabled").checked = !!b.enabled;
 
-/* ---------- Send actions to the Plex tab ---------- */
-async function sendToActiveTab(message){
-  try {
-    // Prefer the currently-active tab in this window if it's Plex
-    const activeTabs = await new Promise(r => chrome.tabs.query({ active: true, currentWindow: true }, r));
-    let tab = activeTabs && activeTabs[0];
+  $("betaAutoStartTimer").checked = !!b.autoStartTimerOnPlay;
+  $("betaAutoStartMins").value = Number(b.autoStartTimerMinutes ?? 30);
 
-    const isPlex = (t) => !!(t && typeof t.url === 'string' && /:\/\/.*\.plex\.tv\//i.test(t.url));
-    if (!isPlex(tab)) {
-      const plexTabs = await queryTabs('*://*.plex.tv/*');
-      if (!plexTabs || !plexTabs.length) return;
-      tab = plexTabs.find(t => t.active) || plexTabs[0];
-    }
-    if (!tab?.id) return;
+  $("betaFade").checked = !!b.fadeBeforeTimerEnd;
+  $("betaFadeSec").value = Number(b.fadeSeconds ?? 20);
 
-    await new Promise(resolve => {
-      // IMPORTANT: Plex uses iframes; our overlay/timer lives in the top frame.
-      chrome.tabs.sendMessage(tab.id, message, { frameId: 0 }, () => {
-        // Swallow "no receiver" errors (content script not ready / not on Plex player page)
-        void chrome.runtime.lastError;
-        resolve();
-      });
-    });
-  } catch (e) {
-    console.warn('[Popup] sendToActiveTab failed', e);
+  $("betaRememberSpeed").checked = !!b.rememberSpeed;
+  $("betaDefaultSpeed").value = Number(b.defaultSpeed ?? 1.0);
+
+  $("betaSubs").value = String(b.subtitlesDefault || "auto");
+
+  $("betaWakeLock").checked = !!b.wakeLock;
+  $("betaPauseHidden").checked = !!b.pauseOnHidden;
+  $("betaPauseHiddenSec").value = Number(b.pauseOnHiddenSec ?? 10);
+
+  $("betaFullscreen").checked = !!b.autoFullscreen;
+  $("betaContinue").checked = !!b.autoContinueWatching;
+
+  setBetaDisabledUI(!b.enabled);
+}
+
+function setBetaDisabledUI(disabled) {
+  const ids = [
+    "betaAutoStartTimer","betaAutoStartMins",
+    "betaFade","betaFadeSec",
+    "betaRememberSpeed","betaDefaultSpeed",
+    "betaSubs",
+    "betaWakeLock",
+    "betaPauseHidden","betaPauseHiddenSec",
+    "betaFullscreen",
+    "betaContinue"
+  ];
+  for (const id of ids) {
+    $(id).disabled = disabled;
+    if (disabled) $(id).closest?.(".row")?.classList?.add?.("disabled");
   }
 }
 
-/* ---------- Tiny DOM ---------- */
-function $(id){return document.getElementById(id)}
-function setText(id,v){$(id).textContent=v}
-function setChecked(id,v){$(id).checked=!!v}
-function getChecked(id){return !!$(id).checked}
-function setValue(id,v){$(id).value=v}
-function onChange(id,fn){ $(id).addEventListener('change',e=>{ const val=e.target.type==='checkbox'?e.target.checked:parseInt(e.target.value,10); fn(val); }); }
+function bindBetaHandlers() {
+  $("betaEnabled").addEventListener("change", async (e) => {
+    const settings = await getSync();
+    const b = { ...(settings.beta || DEFAULTS.beta), enabled: !!e.target.checked };
+    await setSync({ beta: b });
+    setBetaDisabledUI(!b.enabled);
+  });
+
+  const bind = (id, key, parser = (v)=>v) => {
+    $(id).addEventListener("change", async (e) => {
+      const settings = await getSync();
+      const b = { ...(settings.beta || DEFAULTS.beta), [key]: parser(e.target) };
+      await setSync({ beta: b });
+    });
+  };
+
+  bind("betaAutoStartTimer", "autoStartTimerOnPlay", (t)=>!!t.checked);
+  bind("betaAutoStartMins", "autoStartTimerMinutes", (t)=>Math.max(5, Math.min(360, Number(t.value||30))));
+  bind("betaFade", "fadeBeforeTimerEnd", (t)=>!!t.checked);
+  bind("betaFadeSec", "fadeSeconds", (t)=>Math.max(3, Math.min(180, Number(t.value||20))));
+  bind("betaRememberSpeed", "rememberSpeed", (t)=>!!t.checked);
+  bind("betaDefaultSpeed", "defaultSpeed", (t)=>Math.max(0.25, Math.min(3, Number(t.value||1))));
+  bind("betaSubs", "subtitlesDefault", (t)=>String(t.value||"auto"));
+  bind("betaWakeLock", "wakeLock", (t)=>!!t.checked);
+  bind("betaPauseHidden", "pauseOnHidden", (t)=>!!t.checked);
+  bind("betaPauseHiddenSec", "pauseOnHiddenSec", (t)=>Math.max(3, Math.min(600, Number(t.value||10))));
+  bind("betaFullscreen", "autoFullscreen", (t)=>!!t.checked);
+  bind("betaContinue", "autoContinueWatching", (t)=>!!t.checked);
+}

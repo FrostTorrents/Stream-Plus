@@ -1,62 +1,141 @@
-<!DOCTYPE html>
+<!doctype html>
 <html>
 <head>
-  <title>Smart Skipper Options</title>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Stream Plus Options</title>
   <style>
-    body { font-family: sans-serif; padding: 20px; max-width: 420px; }
-    h2 { margin-top: 0; }
-    label { display: flex; justify-content: space-between; margin: 12px 0; }
-    input[type="number"] { width: 80px; }
-    .section { margin-bottom: 20px; }
-    button { padding: 6px 12px; margin-top: 10px; }
+    :root{
+      --bg:#0b1220; --panel:#0f1a2b; --text:#e8edf5; --muted:rgba(232,237,245,.68);
+      --line:rgba(255,255,255,.10); --accent:#3b82f6; --radius:18px; --shadow:0 18px 60px rgba(0,0,0,.45);
+    }
+    @media (prefers-color-scheme: light){
+      :root{ --bg:#ffffff; --panel:#f7f8fb; --text:#0b1220; --muted:#6b7280; --line:#e5e7eb; --shadow:0 14px 40px rgba(0,0,0,.10); }
+    }
+    html,body{margin:0;padding:0}
+    body{
+      background:
+        radial-gradient(1200px 600px at 20% -10%, rgba(59,130,246,.18), transparent 55%),
+        radial-gradient(900px 500px at 110% 20%, rgba(34,197,94,.12), transparent 55%),
+        var(--bg);
+      color:var(--text);
+      font: 14px/1.5 ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial;
+      padding: 20px;
+    }
+    .wrap{max-width: 760px; margin: 0 auto;}
+    h1{margin:0 0 8px; font-size: 22px; letter-spacing:.2px}
+    .sub{color:var(--muted); margin-bottom: 18px}
+    .card{
+      background: linear-gradient(180deg, rgba(255,255,255,.05), rgba(255,255,255,.02));
+      border:1px solid var(--line);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+      padding: 16px;
+      margin: 12px 0;
+    }
+    .row{display:flex;align-items:center;justify-content:space-between;gap:14px;margin: 12px 0}
+    .stack{display:flex;flex-direction:column}
+    .label{font-weight:900}
+    .hint{color:var(--muted);font-size:12px;margin-top:4px}
+    input[type="checkbox"]{width:18px;height:18px;accent-color:var(--accent)}
+    input[type="number"]{
+      width: 140px;
+      padding:9px 10px;border-radius:12px;
+      border:1px solid var(--line);
+      background:rgba(255,255,255,.03);
+      color:var(--text);
+      outline:none;
+      font-weight:800;
+    }
+    button{
+      border:1px solid var(--line);
+      background:rgba(255,255,255,.05);
+      color:var(--text);
+      padding:10px 12px;
+      border-radius:14px;
+      font-weight:900;
+      cursor:pointer;
+    }
+    button.danger{border-color:rgba(239,68,68,.35);background:rgba(239,68,68,.10)}
+    .fine{color:var(--muted);font-size:12px}
+    code{font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;}
   </style>
 </head>
 <body>
-  <h2>Advanced Settings</h2>
+  <div class="wrap">
+    <h1>Stream Plus Options</h1>
+    <div class="sub">Advanced settings + reset utilities. Most controls live in the popup.</div>
 
-  <div class="section">
-    <label><span>🕒 Skip Delay (ms)</span><input type="number" id="skipDelayMs" min="0"></label>
-    <label><span>🔊 Volume Level (%)</span><input type="number" id="volumeLevel" min="0" max="100"></label>
-    <label><span>🔇 Mute Instead of Pause</span><input type="checkbox" id="muteInsteadOfPause"></label>
-    <label><span>🌑 Dim Screen on Timeout</span><input type="checkbox" id="dimScreen"></label>
-    <label><span>⏱ Show Countdown</span><input type="checkbox" id="countdownVisible"></label>
+    <div class="card">
+      <div class="row">
+        <div class="stack">
+          <div class="label">Reset per-series rules</div>
+          <div class="hint">Clears overrides for Skip Intro/Credits/Next.</div>
+        </div>
+        <button id="resetRules" class="danger">Reset</button>
+      </div>
+      <div class="row">
+        <div class="stack">
+          <div class="label">Reset overlay position</div>
+          <div class="hint">Moves the floating overlay back to bottom-left and expands it.</div>
+        </div>
+        <button id="resetOverlay">Reset</button>
+      </div>
+      <div class="fine">
+        If something feels “stuck”, reload the Plex tab and then reopen the popup.
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="label">Diagnostics</div>
+      <div class="hint">Shows what Stream Plus sees right now on the active tab.</div>
+      <div class="row" style="align-items:flex-start;">
+        <button id="copyDebug">Copy debug</button>
+        <pre id="debug" style="margin:0; padding:12px; border:1px solid var(--line); border-radius:14px; background:rgba(0,0,0,.15); overflow:auto; width:100%; max-height: 280px;"></pre>
+      </div>
+      <div class="fine">Debug includes: series key/title, timer state, and sync settings (no personal info).</div>
+    </div>
   </div>
 
-  <button id="saveBtn">💾 Save Settings</button>
-  <p id="status" style="color: green;"></p>
-
   <script>
-    document.addEventListener('DOMContentLoaded', () => {
-      loadSettings();
-      document.getElementById('saveBtn').addEventListener('click', saveSettings);
+    const SYNC_KEYS = ["perShowRules","globalEnabled","skipDelayMs","volumeLevel","muteInsteadOfPause","dimScreen","countdownVisible","episodeGuard","beta","spLastPlaybackRate"];
+    const $ = (id)=>document.getElementById(id);
+
+    async function getActiveTab(){
+      const [tab] = await chrome.tabs.query({ active:true, currentWindow:true });
+      return tab;
+    }
+    function sendToActiveTab(msg){
+      return new Promise(async (resolve)=>{
+        try{
+          const tab = await getActiveTab();
+          if(!tab?.id) return resolve(null);
+          chrome.tabs.sendMessage(tab.id, msg, (res)=>resolve(res||null));
+        }catch{ resolve(null); }
+      });
+    }
+    async function getSync(){
+      return await new Promise((resolve)=>chrome.storage.sync.get(SYNC_KEYS, resolve));
+    }
+
+    $("resetRules").addEventListener("click", async ()=>{
+      await new Promise((resolve)=>chrome.storage.sync.set({ perShowRules:{} }, resolve));
+      alert("Per-series rules cleared.");
     });
 
-    function loadSettings() {
-      chrome.storage.sync.get([
-        'skipDelayMs','volumeLevel','muteInsteadOfPause','dimScreen','countdownVisible'
-      ], (data) => {
-        document.getElementById('skipDelayMs').value = data.skipDelayMs ?? 500;
-        document.getElementById('volumeLevel').value = data.volumeLevel ?? 50;
-        document.getElementById('muteInsteadOfPause').checked = !!data.muteInsteadOfPause;
-        document.getElementById('dimScreen').checked = !!data.dimScreen;
-        document.getElementById('countdownVisible').checked = !!data.countdownVisible;
-      });
-    }
+    $("resetOverlay").addEventListener("click", async ()=>{
+      await new Promise((resolve)=>chrome.storage.local.remove(["overlayPosV5"], resolve));
+      alert("Overlay position reset.");
+    });
 
-    function saveSettings() {
-      const payload = {
-        skipDelayMs: parseInt(document.getElementById('skipDelayMs').value, 10),
-        volumeLevel: parseInt(document.getElementById('volumeLevel').value, 10),
-        muteInsteadOfPause: document.getElementById('muteInsteadOfPause').checked,
-        dimScreen: document.getElementById('dimScreen').checked,
-        countdownVisible: document.getElementById('countdownVisible').checked
-      };
-      chrome.storage.sync.set(payload, () => {
-        const status = document.getElementById('status');
-        status.textContent = '✅ Saved!';
-        setTimeout(() => status.textContent = '', 1800);
-      });
-    }
+    $("copyDebug").addEventListener("click", async ()=>{
+      const sync = await getSync();
+      const st = await sendToActiveTab({ type:"sp:state:get" });
+      const dbg = { state: st, sync };
+      const text = JSON.stringify(dbg, null, 2);
+      $("debug").textContent = text;
+      try{ await navigator.clipboard.writeText(text); }catch{}
+    });
   </script>
 </body>
 </html>
