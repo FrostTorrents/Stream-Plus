@@ -64,7 +64,7 @@
 <body>
   <div class="wrap">
     <h1>Stream Plus Options</h1>
-    <div class="sub">Advanced settings + reset utilities. Most controls live in the popup.</div>
+    <div class="sub">Advanced settings + reset utilities. Most controls live in the popup. · <a href="https://square.link/u/JZUUls2L" target="_blank" rel="noopener">Buy me a coffee</a></div>
 
     <div class="card">
       <div class="row">
@@ -98,7 +98,28 @@
   </div>
 
   <script>
-    const SYNC_KEYS = ["perShowRules","globalEnabled","skipDelayMs","volumeLevel","muteInsteadOfPause","dimScreen","countdownVisible","episodeGuard","beta","spLastPlaybackRate"];
+    const SYNC_KEYS = [
+      "perShowRules",
+      "globalEnabled",
+      "skipDelayMs",
+      "volumeLevel",
+      "muteInsteadOfPause",
+      "dimScreen",
+      "countdownVisible",
+      "episodeGuard",
+      "minAutoCooldownMs",
+      "debugLogs",
+      "defaultSkipIntro",
+      "defaultSkipCredits",
+      "defaultNextEpisode",
+      "timerEndAction",
+      "reduceAudioLevel",
+      "timerDefaultMin",
+      "overlayShowVideoLeft",
+      "overlayShowActions",
+      "beta",
+      "spLastPlaybackRate"
+];
     const $ = (id)=>document.getElementById(id);
 
     async function getActiveTab(){

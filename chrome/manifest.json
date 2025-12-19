@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Stream Plus",
-  "version": "5.1.1",
-  "description": "Stream Plus (redesign) \u2014 overlay, sleep timer, smart skippers (including robust Next Episode), and beta helpers.",
+  "version": "5.3.1",
+  "description": "Stream Plus \u2014 overlay sleep timer, skippers (incl. robust Next Episode), and smart beta helpers.",
   "permissions": [
     "storage",
     "tabs"

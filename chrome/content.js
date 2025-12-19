@@ -11,28 +11,74 @@
     "perShowRules",
     "globalEnabled",
     "skipDelayMs",
+    "minAutoCooldownMs",
+    "debugLogs",
+    "defaultSkipIntro",
+    "defaultSkipCredits",
+    "defaultNextEpisode",
     "volumeLevel",
     "muteInsteadOfPause",
+    "timerEndAction",
+    "reduceAudioLevel",
     "dimScreen",
     "countdownVisible",
+    "timerDefaultMin",
+    "activeTabOnly",
+    "nextLatePhasePct",
+    "overlayOpacity",
+    "overlayAutoHide",
+    "overlayAutoHideSec",
+    "overlaySnap",
+    "overlayShowEndTime",
+    "overlayShowAdd5",
+    "overlayShowVideoLeft",
+    "overlayShowActions",
+    "overlayLocked",
+    "timerEndChime",
+    "timerEndChimeVolume",
     "episodeGuard",
     "beta"
-  ];
+];
 
   const DEFAULTS = {
     perShowRules: {},
     globalEnabled: true,
     skipDelayMs: 500,
+    minAutoCooldownMs: 600,
+    debugLogs: false,
+    defaultSkipIntro: true,
+    defaultSkipCredits: true,
+    defaultNextEpisode: true,
     volumeLevel: 50,
     muteInsteadOfPause: false,
+    timerEndAction: "pause",
+    reduceAudioLevel: 10,
     dimScreen: true,
     countdownVisible: false,
+    timerDefaultMin: 30,
+
+    activeTabOnly: true,
+    nextLatePhasePct: 80,
+
+    overlayOpacity: 1.0,
+    overlayAutoHide: false,
+    overlayAutoHideSec: 4,
+    overlaySnap: true,
+    overlayShowEndTime: true,
+    overlayShowAdd5: false,
+    overlayShowVideoLeft: true,
+    overlayShowActions: true,
+    overlayLocked: false,
+
+    timerEndChime: false,
+    timerEndChimeVolume: 40,
     episodeGuard: { enabled: false, maxEpisodes: 3, watchedCount: 0, lastWatched: null },
     beta: {
       enabled: false,
       wakeLock: false,
       pauseOnHidden: false,
       pauseOnHiddenSec: 10,
+      resumeOnVisible: false,
       autoFullscreen: false,
       autoStartTimerOnPlay: false,
       autoStartTimerMinutes: 30,
@@ -68,6 +114,17 @@
     overlayVisible: false,
     overlayMin: false,
     overlayScale: 1.0,
+
+    overlayOpacity: 1.0,
+    overlayLocked: false,
+    overlayLastInteractMs: 0,
+    overlayAutoHideArmed: false,
+
+    // timer metrics
+    totalSec: 0,
+    endAtMs: 0,
+    userPausedTimer: false,
+    timerEndedAtMs: 0,
 
     // playback
     wakeLock: null,
@@ -154,9 +211,9 @@
     const key = state.seriesKey || "unknown";
     const r = per[key] || {};
     return {
-      skipIntro: r.skipIntro ?? true,
-      skipCredits: r.skipCredits ?? true,
-      nextEpisode: r.nextEpisode ?? true,
+      skipIntro: r.skipIntro ?? (state.settings.defaultSkipIntro ?? true),
+      skipCredits: r.skipCredits ?? (state.settings.defaultSkipCredits ?? true),
+      nextEpisode: r.nextEpisode ?? (state.settings.defaultNextEpisode ?? true),
       // future: skipRecap separate if needed
     };
   }
@@ -209,6 +266,8 @@
         user-select: none;
         -webkit-user-select: none;
         pointer-events: auto;
+        opacity: var(--op, 1);
+        transition: opacity 180ms ease, transform 180ms ease;
         transform: scale(var(--scale, 1));
         transform-origin: left bottom;
       }
@@ -249,6 +308,21 @@
         color: rgba(255,255,255,.68);
         margin-top: 2px;
       }
+
+      .end{
+        font-size: 10.5px;
+        color: rgba(255,255,255,.55);
+        margin-top: 2px;
+        letter-spacing: .2px;
+      }
+      .wrap:not(.showEnd) .end{ display:none; }
+      .wrap:not(.showAdd5) #spAdd5{ display:none; }
+      .tinyrow{ margin-top: 8px; }
+      .tinyrow button{ padding: 6px 8px; font-size: 11.5px; border-radius: 10px; }
+      .wrap.autohide.idle{ opacity: 0.18; }
+      .wrap.locked .grip{ opacity:.35; cursor:not-allowed; }
+      .wrap.locked .resize{ display:none; }
+
       .stack{ display:flex; flex-direction:column; }
       .pill{
         display:inline-flex; align-items:center; gap:6px;
@@ -341,6 +415,7 @@
     const wrap = document.createElement("div");
     wrap.className = "wrap";
     wrap.style.setProperty("--scale", String(state.overlayScale || 1));
+    wrap.style.setProperty("--op", String(state.settings?.overlayOpacity ?? 1));
     wrap.innerHTML = `
       <div class="card">
         <div class="grip" id="spGrip" title="Drag"><div class="dots"></div></div>
@@ -349,12 +424,15 @@
           <div class="stack">
             <div class="time" id="spTime">—</div>
             <div class="sub" id="spSub">Sleep Timer</div>
+            <div class="end" id="spEnd">—</div>
+            <div class="vid" id="spVid" style="display:none">—</div>
           </div>
         </div>
 
         <div class="divider"></div>
 
         <div class="btnrow">
+          <button id="spAdd5" class="pill small" title="+5 minutes">+5</button>
           <button id="spAdd15">+15</button>
           <button id="spAdd30">+30</button>
           <button id="spAdd60">+60</button>
@@ -362,9 +440,17 @@
           <button id="spCancel" class="danger">Cancel</button>
         </div>
 
+        <div class="btnrow tinyrow">
+          <button id="spPause" class="ghost" title="Pause/Resume timer">⏯</button>
+          <button id="spSnooze" class="ghost" title="Snooze +10m">Snooze +10</button>
+          <button id="spRestoreVol" class="ghost" title="Restore volume" style="display:none">Restore vol</button>
+          <button id="spToEnd" class="ghost" title="Set timer to end of episode">End</button>
+          <button id="spLock" class="ghost" title="Lock/unlock overlay">🔓</button>
+        </div>
+
         <div class="divider"></div>
 
-        <div class="btnrow">
+        <div class="btnrow" id="spActionsRow">
           <button id="spSkipIntro" class="ghost">Intro</button>
           <button id="spSkipCredits" class="ghost">Credits</button>
           <button id="spNext" class="ghost">Next</button>
@@ -392,6 +478,7 @@
     bindOverlayControls();
     restoreOverlayPos();
     renderOverlay();
+    armOverlayAutoHide();
   }
 
   function setOverlayVisible(visible) {
@@ -428,6 +515,55 @@
     saveOverlayPos();
   }
 
+
+  function setOverlayOpacity(opacity) {
+    const o = clamp(Number(opacity) || 1, 0.25, 1.0);
+    state.overlayOpacity = o;
+    if (!state.overlayHost) return;
+    const wrap = state.overlayShadow.querySelector(".wrap");
+    wrap.style.setProperty("--op", String(o));
+    // don't persist in local pos; stored in sync settings
+  }
+
+  function setOverlayLocked(locked) {
+    state.overlayLocked = !!locked;
+    if (!state.overlayHost) return;
+    const wrap = state.overlayShadow.querySelector(".wrap");
+    wrap.classList.toggle("locked", state.overlayLocked);
+    const b = state.overlayShadow.getElementById("spLock");
+    if (b) b.textContent = state.overlayLocked ? "🔒" : "🔓";
+    saveOverlayPos();
+  }
+
+  function armOverlayAutoHide() {
+    if (!state.overlayHost) return;
+    const s = state.settings || {};
+    const wrap = state.overlayShadow.querySelector(".wrap");
+    wrap.classList.toggle("autohide", !!s.overlayAutoHide);
+    if (!s.overlayAutoHide) {
+      wrap.classList.remove("idle");
+      return;
+    }
+    state.overlayLastInteractMs = Date.now();
+    // set idle after delay unless hovered
+    const delay = clamp(Number(s.overlayAutoHideSec) || 4, 1, 15) * 1000;
+    window.clearTimeout(state._overlayIdleT);
+    state._overlayIdleT = window.setTimeout(() => {
+      // if still no interaction and not hovered, go idle
+      if (Date.now() - state.overlayLastInteractMs >= delay && !wrap.matches(":hover")) {
+        wrap.classList.add("idle");
+      }
+    }, delay + 20);
+  }
+
+  function bumpOverlay() {
+    if (!state.overlayHost) return;
+    const wrap = state.overlayShadow.querySelector(".wrap");
+    state.overlayLastInteractMs = Date.now();
+    wrap.classList.remove("idle");
+    armOverlayAutoHide();
+  }
+
   function fmtTime(sec) {
     sec = Math.max(0, Math.floor(sec));
     const h = Math.floor(sec / 3600);
@@ -437,21 +573,103 @@
     return `${m}:${String(s).padStart(2,"0")}`;
   }
 
+  function fmtClock(ms) {
+    try {
+      const d = new Date(ms);
+      let h = d.getHours();
+      const m = d.getMinutes();
+      const am = h >= 12 ? "PM" : "AM";
+      h = h % 12; if (h === 0) h = 12;
+      return `${h}:${String(m).padStart(2,"0")} ${am}`;
+    } catch { return "—"; }
+  }
+
   function renderOverlay() {
     if (!state.overlayHost) return;
     const t = state.overlayShadow.getElementById("spTime");
     const sub = state.overlayShadow.getElementById("spSub");
+    const end = state.overlayShadow.getElementById("spEnd");
+    const vid = state.overlayShadow.getElementById("spVid");
+    const actionsRow = state.overlayShadow.getElementById("spActionsRow");
     const ring = state.overlayShadow.getElementById("spRing");
+    const wrap = state.overlayShadow.querySelector(".wrap");
 
-    if (state.timerRunning && state.remainingSec > 0) {
+    // classes derived from settings
+    wrap.classList.toggle("showEnd", !!state.settings.overlayShowEndTime);
+    wrap.classList.toggle("showAdd5", !!state.settings.overlayShowAdd5);
+    wrap.classList.toggle("autohide", !!state.settings.overlayAutoHide);
+    wrap.classList.toggle("locked", !!state.settings.overlayLocked);
+
+    if (actionsRow) actionsRow.style.display = (state.settings.overlayShowActions === false) ? "none" : "";
+
+    // update lock icon text if exists
+    const lockBtn = state.overlayShadow.getElementById("spLock");
+    if (lockBtn) lockBtn.textContent = state.settings.overlayLocked ? "🔒" : "🔓";
+
+    // snooze visibility
+    const snoozeBtn = state.overlayShadow.getElementById("spSnooze");
+    const endedRecently = state.timerEndedAtMs && (Date.now() - state.timerEndedAtMs < 120000);
+    if (snoozeBtn) snoozeBtn.style.display = endedRecently ? "inline-flex" : "none";
+
+    const restoreBtn = state.overlayShadow.getElementById("spRestoreVol");
+    if (restoreBtn) restoreBtn.style.display = state._reducedAudioActive ? "inline-flex" : "none";
+
+    // pause/resume label
+    const pauseBtn = state.overlayShadow.getElementById("spPause");
+    if (pauseBtn) pauseBtn.textContent = state.userPausedTimer ? "▶" : "⏸";
+
+    if (state.timerRunning && state.remainingSec > 0.01) {
       t.textContent = fmtTime(state.remainingSec);
-      sub.textContent = state.timerSuspended ? "Paused" : state.seriesTitle || "Sleep Timer";
-      // progress ring: when we don't know original duration, show pulsing-ish partial.
-      const p = clamp((state.remainingSec % 900) / 900, 0, 1); // 15m loop
-      ring.style.setProperty("--p", `${Math.round(p*100)}%`);
+
+      const paused = state.userPausedTimer || state.timerSuspended;
+      sub.textContent = paused ? "Paused" : (state.seriesTitle || "Sleep Timer");
+
+      // end time
+      if (end) {
+        if (paused) {
+          end.textContent = "Ends —";
+        } else {
+          const endAt = Date.now() + Math.max(0, state.remainingSec) * 1000;
+          end.textContent = `Ends ${fmtClock(endAt)}`;
+        }
+      }
+
+      // episode remaining line
+      if (vid) {
+        if (state.settings.overlayShowVideoLeft === false) {
+          vid.style.display = "none";
+        } else {
+          const vv = getVideo();
+          if (vv && Number.isFinite(vv.duration) && vv.duration > 0) {
+            vid.style.display = "";
+            vid.textContent = `Episode left ${fmtTime(Math.max(0, vv.duration - (vv.currentTime || 0)))}`;
+          } else {
+            vid.style.display = "none";
+          }
+        }
+      }
+
+      // progress ring
+      const total = Math.max(1, state.totalSec || 0, state.remainingSec);
+      const p = clamp(1 - (state.remainingSec / total), 0, 1);
+      ring.style.setProperty("--p", `${Math.round(p * 100)}%`);
     } else {
-      t.textContent = "No timer";
+      t.textContent = endedRecently ? "Finished" : "No timer";
       sub.textContent = state.seriesTitle || "Sleep Timer";
+      if (end) end.textContent = endedRecently ? "Tap Snooze to continue" : "—";
+      if (vid) {
+        if (state.settings.overlayShowVideoLeft === false) {
+          vid.style.display = "none";
+        } else {
+          const vv = getVideo();
+          if (vv && Number.isFinite(vv.duration) && vv.duration > 0) {
+            vid.style.display = "";
+            vid.textContent = `Episode left ${fmtTime(Math.max(0, vv.duration - (vv.currentTime || 0)))}`;
+          } else {
+            vid.style.display = "none";
+          }
+        }
+      }
       ring.style.setProperty("--p", `0%`);
     }
   }
@@ -459,43 +677,73 @@
   function bindOverlayControls() {
     const $ = (id) => state.overlayShadow.getElementById(id);
 
-    const click = (id, fn) => $(id).addEventListener("click", (e) => {
+    const click = (id, fn) => {
+      const el = $(id);
+      if (!el) return;
+      el.addEventListener("click", (e) => {
       e.stopPropagation();
       e.preventDefault();
+      bumpOverlay();
       fn();
     });
+    };
 
+    click("spAdd5",  () => startOrExtendTimer(5*60));
     click("spAdd15", () => startOrExtendTimer(15*60));
     click("spAdd30", () => startOrExtendTimer(30*60));
     click("spAdd60", () => startOrExtendTimer(60*60));
     click("spSub10", () => startOrExtendTimer(-10*60));
     click("spCancel", () => stopTimer(false));
 
+    click("spToEnd", () => {
+      const v = getVideo();
+      if (!v || !Number.isFinite(v.duration) || v.duration <= 0) return;
+      const rem = Math.max(0, (v.duration - (v.currentTime || 0)));
+      setTimerAbsolute(rem);
+    });
+
+    click("spRestoreVol", () => {
+      const v = getVideo();
+      if (!v) return;
+      if (typeof state._preEndMuted === "boolean") v.muted = state._preEndMuted;
+      if (typeof state._preEndVolume === "number") v.volume = clamp(state._preEndVolume, 0, 1);
+      state._reducedAudioActive = false;
+      renderOverlay();
+      bumpOverlay();
+    });
+
+    click("spPause", () => toggleUserPauseTimer());
+    click("spSnooze", () => snoozeTimer(10*60));
+    click("spLock", () => toggleOverlayLock());
+
     click("spSkipIntro", () => triggerSkip("intro"));
     click("spSkipCredits", () => triggerSkip("credits"));
     click("spNext", () => triggerSkip("next"));
 
-    $("spMin").addEventListener("click", (e) => {
+    const spMin = $("spMin"); if (spMin) spMin.addEventListener("click", (e) => {
       e.preventDefault();
       e.stopPropagation();
       setOverlayMin(!state.overlayMin);
     });
     // Size controls
-    $("spSizeDown").addEventListener("click", (e) => {
+    const spSizeDown = $("spSizeDown"); if (spSizeDown) spSizeDown.addEventListener("click", (e) => {
       e.preventDefault(); e.stopPropagation();
       setOverlayScale((state.overlayScale || 1) - 0.1);
     });
-    $("spSizeUp").addEventListener("click", (e) => {
+    const spSizeUp = $("spSizeUp"); if (spSizeUp) spSizeUp.addEventListener("click", (e) => {
       e.preventDefault(); e.stopPropagation();
       setOverlayScale((state.overlayScale || 1) + 0.1);
     });
 
     // Resize by dragging the corner handle
     const resize = $("spResize");
+    // resize handle optional
     let resizing = false;
     let rsStartX = 0, rsStartY = 0, rsBase = 1;
 
-    resize.addEventListener("pointerdown", (e) => {
+    if (resize) resize.addEventListener("pointerdown", (e) => {
+      if (state.settings.overlayLocked) return;
+      bumpOverlay();
       resizing = true;
       resize.setPointerCapture(e.pointerId);
       rsBase = state.overlayScale || 1;
@@ -503,7 +751,7 @@
       e.preventDefault(); e.stopPropagation();
     });
 
-    resize.addEventListener("pointermove", (e) => {
+    if (resize) resize.addEventListener("pointermove", (e) => {
       if (!resizing) return;
       const dx = e.clientX - rsStartX;
       const dy = e.clientY - rsStartY;
@@ -513,7 +761,7 @@
       e.preventDefault(); e.stopPropagation();
     });
 
-    resize.addEventListener("pointerup", (e) => {
+    if (resize) resize.addEventListener("pointerup", (e) => {
       if (!resizing) return;
       resizing = false;
       try { resize.releasePointerCapture(e.pointerId); } catch {}
@@ -524,10 +772,13 @@
 
     // Drag only by grip
     const grip = $("spGrip");
+    if (!grip) return;
     let dragging = false;
     let startX=0, startY=0, baseX=18, baseY=18;
 
     grip.addEventListener("pointerdown", (e) => {
+      if (state.settings.overlayLocked) return;
+      bumpOverlay();
       dragging = true;
       grip.setPointerCapture(e.pointerId);
       const wrap = state.overlayShadow.querySelector(".wrap");
@@ -557,7 +808,33 @@
       if (!dragging) return;
       dragging = false;
       try { grip.releasePointerCapture(e.pointerId); } catch {}
+
+      // Snap to nearest corner (optional)
+      if (state.settings.overlaySnap) {
+        try {
+          const wrap = state.overlayShadow.querySelector(".wrap");
+          const r = wrap.getBoundingClientRect();
+          const margin = 12;
+          const leftDist = r.left;
+          const rightDist = window.innerWidth - r.right;
+          const bottomDist = window.innerHeight - r.bottom;
+          const topDist = r.top;
+
+          // choose horizontal
+          const snapLeft = leftDist <= rightDist;
+          const snapBottom = bottomDist <= topDist;
+
+          // translate to our left/bottom coords
+          const newX = snapLeft ? margin : Math.max(margin, window.innerWidth - r.width - margin);
+          const newBottom = snapBottom ? margin : Math.max(margin, window.innerHeight - r.height - margin);
+
+          wrap.style.setProperty("--x", `${Math.round(newX)}px`);
+          wrap.style.setProperty("--y", `${Math.round(newBottom)}px`);
+        } catch {}
+      }
+
       saveOverlayPos();
+      bumpOverlay();
       e.preventDefault();
       e.stopPropagation();
     });
@@ -613,44 +890,166 @@
     el.style.pointerEvents = on ? "auto" : "none";
   }
 
+
+  function playChime(volPct) {
+    try {
+      const v = clamp(Number(volPct) || 40, 0, 100) / 100;
+      const Ctx = window.AudioContext || window.webkitAudioContext;
+      if (!Ctx) return;
+      const ctx = new Ctx();
+      const o1 = ctx.createOscillator();
+      const o2 = ctx.createOscillator();
+      const g = ctx.createGain();
+      g.gain.value = 0.0001;
+      o1.type = "sine"; o2.type = "triangle";
+      o1.frequency.value = 880;
+      o2.frequency.value = 660;
+      o1.connect(g); o2.connect(g);
+      g.connect(ctx.destination);
+
+      const t0 = ctx.currentTime;
+      g.gain.setValueAtTime(0.0001, t0);
+      g.gain.exponentialRampToValueAtTime(Math.max(0.0001, v), t0 + 0.02);
+      g.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.65);
+
+      o1.start(t0); o2.start(t0);
+      o1.stop(t0 + 0.7); o2.stop(t0 + 0.7);
+
+      setTimeout(() => { try { ctx.close(); } catch {} }, 900);
+    } catch {}
+  }
+
   /* -------------------- timer -------------------- */
   function startOrExtendTimer(deltaSec) {
-    const next = clamp((state.remainingSec || 0) + deltaSec, 0, 12 * 3600);
+    const wasRunning = !!state.timerRunning;
+    const prevRemain = Number(state.remainingSec || 0);
+    const next = clamp(prevRemain + Number(deltaSec || 0), 0, 12 * 3600);
+
     state.remainingSec = next;
 
-    if (state.remainingSec <= 0) {
+    if (state.remainingSec <= 0.01) {
       stopTimer(false);
       return;
     }
+
     state.timerRunning = true;
     state.lastTickMs = Date.now();
     state.fadeActive = false;
+    state.timerEndedAtMs = 0;
+
+    // total duration for progress ring (best effort)
+    if (!wasRunning || !Number.isFinite(state.totalSec) || state.totalSec <= 0) {
+      state.totalSec = next;
+    } else {
+      // keep total >= remaining
+      const t = clamp((state.totalSec || next) + Number(deltaSec || 0), 1, 12 * 3600);
+      state.totalSec = Math.max(t, next);
+    }
+
+    // If user had paused the timer and then adds time, keep it paused.
     renderOverlay();
+
     // do NOT force-enable overlay; only show if user already enabled it
     if (state.settings.countdownVisible) setOverlayVisible(true);
+    bumpOverlay();
   }
 
-  function stopTimer(triggerEndActions) {
+  
+  function setTimerAbsolute(sec) {
+    const s = clamp(Number(sec || 0), 0, 12 * 3600);
+    state.remainingSec = s;
+
+    if (s <= 0.01) {
+      stopTimer(false);
+      return;
+    }
+
+    state.timerRunning = true;
+    state.lastTickMs = Date.now();
+    state.fadeActive = false;
+    state.timerSuspended = false;
+    state.userPausedTimer = false;
+    state.timerEndedAtMs = null;
+
+    renderOverlay();
+    if (state.settings.countdownVisible) setOverlayVisible(true);
+    bumpOverlay();
+  }
+
+function stopTimer(triggerEndActions) {
     const had = state.timerRunning;
     state.timerRunning = false;
     state.timerSuspended = false;
     state.remainingSec = 0;
     state.fadeActive = false;
+    state.userPausedTimer = false;
+    if (triggerEndActions && had) state.timerEndedAtMs = Date.now();
     renderOverlay();
     // keep overlay visible if user wants it; just shows "No timer"
     if (triggerEndActions && had) onTimerEnd();
+  }
+
+
+  function toggleUserPauseTimer() {
+    if (!state.timerRunning) return;
+    state.userPausedTimer = !state.userPausedTimer;
+    state.timerSuspended = state.userPausedTimer || state.timerSuspended;
+    state.lastTickMs = Date.now();
+    renderOverlay();
+    bumpOverlay();
+  }
+
+  function snoozeTimer(sec) {
+    // works both when finished recently and when running
+    startOrExtendTimer(Number(sec || 0));
+    renderOverlay();
+    bumpOverlay();
+  }
+
+  function toggleOverlayLock() {
+    const next = !state.settings.overlayLocked;
+    state.settings.overlayLocked = next;
+    setSync({ overlayLocked: next });
+    if (state.overlayHost) {
+      setOverlayLocked(next);
+    }
+    bumpOverlay();
   }
 
   async function onTimerEnd() {
     const v = getVideo();
     if (!v) return;
 
+    if (state.settings.activeTabOnly) {
+      if (document.hidden) return;
+      try { if (IS_TOP && typeof document.hasFocus === "function" && !document.hasFocus()) return; } catch {}
+    }
+
     // Fade handled already; enforce end action
-    if (state.settings.muteInsteadOfPause) {
+    const action = (state.settings.timerEndAction) || (state.settings.muteInsteadOfPause ? "mute" : "pause");
+
+    if (action === "reduce") {
+      // Reduce audio and keep playing
+      try {
+        state._preEndMuted = v.muted;
+        state._preEndVolume = v.volume;
+        v.muted = false;
+        v.volume = clamp(Number(state.settings.reduceAudioLevel || 10) / 100, 0, 1);
+        state._reducedAudioActive = true;
+      } catch {}
+    } else if (action === "mute") {
       v.muted = true;
+      state._reducedAudioActive = false;
     } else {
       try { v.pause(); } catch {}
+      state._reducedAudioActive = false;
     }
+if (state.settings.timerEndChime) {
+      playChime(clamp(Number(state.settings.timerEndChimeVolume || 40), 0, 100));
+    }
+
+    // ensure overlay updates to "Finished" if it is enabled
+    bumpOverlay();
     setDim(true);
   }
 
@@ -678,8 +1077,10 @@
     const dt = Math.max(0, now - (state.lastTickMs || now));
     state.lastTickMs = now;
 
-    // count down only while playing
-    if (v && isPlaying(v)) {
+    // count down only while playing (unless user paused)
+    if (state.userPausedTimer) {
+      state.timerSuspended = true;
+    } else if (v && isPlaying(v)) {
       state.timerSuspended = false;
       const dec = dt / 1000;
       state.remainingSec = Math.max(0, state.remainingSec - dec);
@@ -691,6 +1092,7 @@
       state.timerSuspended = true;
     }
     renderOverlay();
+    armOverlayAutoHide();
   }
 
   /* -------------------- skipper (intro/credits/next) -------------------- */
@@ -738,7 +1140,9 @@
     const v = getVideo();
     if (!v || !Number.isFinite(v.duration) || v.duration <= 0) return false;
     const p = (v.currentTime || 0) / v.duration;
-    return p >= 0.80;
+    const pct = Number(settings.nextLatePhasePct);
+    const thr = Number.isFinite(pct) ? Math.min(0.98, Math.max(0.5, pct / 100)) : 0.80;
+    return p >= thr;
   }
 
   function snClickPlexUpNextIfPresent() {
@@ -1079,6 +1483,11 @@
     const v = getVideo();
     if (!v) return;
 
+    if (state.settings.activeTabOnly) {
+      if (document.hidden) return;
+      try { if (IS_TOP && typeof document.hasFocus === "function" && !document.hasFocus()) return; } catch {}
+    }
+
     // update series info opportunistically
     state.seriesKey = parseSeriesKeyFromUrl();
     state.seriesTitle = inferSeriesTitle();
@@ -1088,7 +1497,7 @@
     const rules = currentRules();
 
     const now = Date.now();
-    if (now - skipperLastClick < 600) return;
+    if (now - skipperLastClick < clamp(Number(state.settings.minAutoCooldownMs || 600), 100, 5000)) return;
 
     if (rules.skipIntro) {
       const el = findClickable(RE_INTRO);
@@ -1142,11 +1551,21 @@
 
     document.addEventListener("visibilitychange", () => {
       clearTimeout(state.hiddenPauseTimer);
+
+      // Resume if we were paused by this feature
+      if (!document.hidden && beta.resumeOnVisible && state._pausedByHidden) {
+        state._pausedByHidden = false;
+        const vv = getVideo();
+        if (vv) {
+          try { vv.play?.(); } catch {}
+        }
+      }
+
       if (document.hidden && isPlaying(v)) {
         state.hiddenPauseTimer = setTimeout(() => {
           const vv = getVideo();
           if (vv && document.hidden && isPlaying(vv)) {
-            try { vv.pause(); } catch {}
+            try { vv.pause(); state._pausedByHidden = true; } catch {}
           }
         }, sec * 1000);
       }
@@ -1261,6 +1680,11 @@
 
     // set overlay visibility according to user pref (doesn't start/stop timer)
     setOverlayVisible(!!state.settings.countdownVisible);
+    // apply overlay style prefs
+    setOverlayOpacity(state.settings.overlayOpacity);
+    state.overlayLocked = !!state.settings.overlayLocked;
+    if (state.overlayHost) setOverlayLocked(state.overlayLocked);
+    armOverlayAutoHide();
   }
 
   function onStorageChanged(changes, area) {
@@ -1289,13 +1713,23 @@
         seriesTitle: state.seriesTitle,
         timerRunning: state.timerRunning,
         timerRemainingSec: Math.max(0, Math.floor(state.remainingSec)),
+        videoRemainingSec: (() => {
+          try {
+            const vv = v || getVideo();
+            if (!vv || !Number.isFinite(vv.duration) || vv.duration <= 0) return 0;
+            return Math.max(0, Math.floor((vv.duration - (vv.currentTime || 0))));
+          } catch { return 0; }
+        })(),
         overlayVisible: !!state.settings.countdownVisible
       });
       return true;
     }
 
     if (msg.type === "sp:timer:add") { startOrExtendTimer((msg.seconds || 0)); sendResponse({ ok: true }); return true; }
+    if (msg.type === "sp:timer:set") { setTimerAbsolute((msg.seconds || 0)); sendResponse({ ok: true }); return true; }
     if (msg.type === "sp:timer:cancel") { stopTimer(false); sendResponse({ ok: true }); return true; }
+
+    if (msg.type === "sp:overlay:refresh") { renderOverlay(); sendResponse({ ok: true }); return true; }
 
     if (msg.type === "sp:overlay:set") {
       // user toggled preference; we persist it, and setOverlayVisible will follow
@@ -1334,6 +1768,21 @@
       ensureOverlay();
       setOverlayVisible(true);
       renderOverlay();
+    }
+
+
+    // Auto-hide overlay: wake it on mouse move (top frame only)
+    if (IS_TOP) {
+      let lastMove = 0;
+      document.addEventListener("mousemove", () => {
+        const now = Date.now();
+        if (now - lastMove < 350) return;
+        lastMove = now;
+        if (!state.overlayHost) return;
+        if (!state.settings.countdownVisible) return;
+        if (!state.settings.overlayAutoHide) return;
+        bumpOverlay();
+      }, { passive: true });
     }
 
     // periodic loops (lightweight)

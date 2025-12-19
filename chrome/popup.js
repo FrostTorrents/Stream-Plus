@@ -5,10 +5,31 @@ const SYNC_KEYS = [
   "perShowRules",
   "globalEnabled",
   "skipDelayMs",
+  "minAutoCooldownMs",
+  "debugLogs",
+  "defaultSkipIntro",
+  "defaultSkipCredits",
+  "defaultNextEpisode",
   "volumeLevel",
   "muteInsteadOfPause",
+  "timerEndAction",
+  "reduceAudioLevel",
   "dimScreen",
   "countdownVisible",
+  "timerDefaultMin",
+  "activeTabOnly",
+  "nextLatePhasePct",
+  "overlayOpacity",
+  "overlayAutoHide",
+  "overlayAutoHideSec",
+  "overlaySnap",
+  "overlayShowEndTime",
+  "overlayShowAdd5",
+  "overlayShowVideoLeft",
+  "overlayShowActions",
+  "overlayLocked",
+  "timerEndChime",
+  "timerEndChimeVolume",
   "beta"
 ];
 
@@ -16,15 +37,37 @@ const DEFAULTS = {
   perShowRules: {},
   globalEnabled: true,
   skipDelayMs: 500,
+  minAutoCooldownMs: 600,
+  debugLogs: false,
+  defaultSkipIntro: true,
+  defaultSkipCredits: true,
+  defaultNextEpisode: true,
   volumeLevel: 50,
   muteInsteadOfPause: false,
+  timerEndAction: "pause",
+  reduceAudioLevel: 10,
   dimScreen: true,
   countdownVisible: false,
+  timerDefaultMin: 30,
+  activeTabOnly: true,
+  nextLatePhasePct: 80,
+  overlayOpacity: 1.0,
+  overlayAutoHide: false,
+  overlayAutoHideSec: 4,
+  overlaySnap: true,
+  overlayShowEndTime: true,
+  overlayShowAdd5: false,
+  overlayShowVideoLeft: true,
+  overlayShowActions: true,
+  overlayLocked: false,
+  timerEndChime: false,
+  timerEndChimeVolume: 40,
   beta: {
     enabled: false,
     wakeLock: false,
     pauseOnHidden: false,
     pauseOnHiddenSec: 10,
+    resumeOnVisible: false,
     autoFullscreen: false,
     autoStartTimerOnPlay: false,
     autoStartTimerMinutes: 30,
@@ -169,27 +212,77 @@ async function init() {
   });
 
   // timer buttons
+  $("tAdd5").addEventListener("click", () => sendToActiveTab({ type: "sp:timer:add", seconds: 5*60 }));
   $("tAdd15").addEventListener("click", () => sendToActiveTab({ type: "sp:timer:add", seconds: 15*60 }));
   $("tAdd30").addEventListener("click", () => sendToActiveTab({ type: "sp:timer:add", seconds: 30*60 }));
   $("tAdd60").addEventListener("click", () => sendToActiveTab({ type: "sp:timer:add", seconds: 60*60 }));
   $("tSub10").addEventListener("click", () => sendToActiveTab({ type: "sp:timer:add", seconds: -10*60 }));
   $("tCancel").addEventListener("click", () => sendToActiveTab({ type: "sp:timer:cancel" }));
 
+  $("tToEnd").addEventListener("click", async () => {
+    const st = await sendToActiveTab({ type: "sp:state:get" });
+    const rem = Number(st?.videoRemainingSec || 0);
+    if (rem > 1) {
+      await sendToActiveTab({ type: "sp:timer:set", seconds: rem });
+    }
+  });
+
+  $("tDefaultStart").addEventListener("click", async () => {
+    const sync = await getSync();
+    const min = Math.max(1, Math.min(360, Number(sync.timerDefaultMin || 30)));
+    await sendToActiveTab({ type: "sp:timer:set", seconds: min * 60 });
+  });
+
   // global toggles / values
   $("showOverlay").checked = !!settings.countdownVisible;
   $("showOverlay").addEventListener("change", async (e) => {
     const v = !!e.target.checked;
     await setSync({ countdownVisible: v });
+
+
+  $("timerDefaultMin").value = Number(settings.timerDefaultMin ?? 30);
+  $("timerDefaultMin").addEventListener("change", async (e) => {
+    const v = Math.max(1, Math.min(360, Number(e.target.value || 30)));
+    e.target.value = v;
+    await setSync({ timerDefaultMin: v });
+  });
+
+  // timer end behavior
+  const setReduceRowVis = (action) => {
+    const row = $("reduceRow");
+    if (!row) return;
+    row.style.display = (action === "reduce") ? "flex" : "none";
+  };
+
+  const action = (settings.timerEndAction) || (settings.muteInsteadOfPause ? "mute" : "pause");
+  $("timerEndAction").value = action;
+  setReduceRowVis(action);
+
+  $("timerEndAction").addEventListener("change", async (e) => {
+    const v = (e.target.value || "pause");
+    setReduceRowVis(v);
+    await setSync({
+      timerEndAction: v,
+      // keep legacy key in sync for backwards compat
+      muteInsteadOfPause: (v === "mute")
+    });
+    await sendToActiveTab({ type: "sp:overlay:refresh" });
+  });
+
+  $("reduceAudioLevel").value = Number(settings.reduceAudioLevel ?? 10);
+  $("reduceAudioLevel").addEventListener("change", async (e) => {
+    const v = Math.max(0, Math.min(100, Number(e.target.value || 10)));
+    e.target.value = v;
+    await setSync({ reduceAudioLevel: v, timerEndAction: "reduce", muteInsteadOfPause: false });
+    $("timerEndAction").value = "reduce";
+    setReduceRowVis("reduce");
+    await sendToActiveTab({ type: "sp:overlay:refresh" });
+  });
     await sendToActiveTab({ type: "sp:overlay:set", visible: v });
     await refreshChips(await getSync());
   });
 
-  $("muteInstead").checked = !!settings.muteInsteadOfPause;
-  $("muteInstead").addEventListener("change", async (e) => {
-    await setSync({ muteInsteadOfPause: !!e.target.checked });
-  });
-
-  $("dimEnd").checked = !!settings.dimScreen;
+    $("dimEnd").checked = !!settings.dimScreen;
   $("dimEnd").addEventListener("change", async (e) => {
     await setSync({ dimScreen: !!e.target.checked });
   });
@@ -207,6 +300,33 @@ async function init() {
     const v = Math.max(0, Math.min(5000, Number(e.target.value || 0)));
     e.target.value = v;
     await setSync({ skipDelayMs: v });
+
+  $("defaultSkipIntro").checked = !!settings.defaultSkipIntro;
+  $("defaultSkipIntro").addEventListener("change", async (e) => {
+    await setSync({ defaultSkipIntro: !!e.target.checked });
+  });
+
+  $("defaultSkipCredits").checked = !!settings.defaultSkipCredits;
+  $("defaultSkipCredits").addEventListener("change", async (e) => {
+    await setSync({ defaultSkipCredits: !!e.target.checked });
+  });
+
+  $("defaultNextEpisode").checked = !!settings.defaultNextEpisode;
+  $("defaultNextEpisode").addEventListener("change", async (e) => {
+    await setSync({ defaultNextEpisode: !!e.target.checked });
+  });
+
+  $("minAutoCooldownMs").value = Number(settings.minAutoCooldownMs ?? 600);
+  $("minAutoCooldownMs").addEventListener("change", async (e) => {
+    const v = Math.max(100, Math.min(5000, Number(e.target.value || 600)));
+    e.target.value = v;
+    await setSync({ minAutoCooldownMs: v });
+  });
+
+  $("debugLogs").checked = !!settings.debugLogs;
+  $("debugLogs").addEventListener("change", async (e) => {
+    await setSync({ debugLogs: !!e.target.checked });
+  });
   });
 
   $("volumeLevel").value = Number(settings.volumeLevel ?? 50);
@@ -215,6 +335,113 @@ async function init() {
     e.target.value = v;
     await setSync({ volumeLevel: v });
   });
+
+
+  // Global: automation safety
+  if ($("activeTabOnly")) {
+    $("activeTabOnly").checked = settings.activeTabOnly !== false;
+    $("activeTabOnly").addEventListener("change", async (e) => {
+      await setSync({ activeTabOnly: !!e.target.checked });
+    });
+  }
+
+  if ($("nextLatePhasePct")) {
+    $("nextLatePhasePct").value = Number(settings.nextLatePhasePct ?? 80);
+    $("nextLatePhasePct").addEventListener("change", async (e) => {
+      const v = Math.max(50, Math.min(98, Number(e.target.value || 80)));
+      e.target.value = v;
+      await setSync({ nextLatePhasePct: v });
+    });
+  }
+
+  // Global: overlay behavior
+  if ($("overlayOpacity")) {
+    $("overlayOpacity").value = Number(settings.overlayOpacity ?? 1.0);
+    $("overlayOpacity").addEventListener("change", async (e) => {
+      const v = Math.max(0.25, Math.min(1, Number(e.target.value || 1)));
+      e.target.value = v;
+      await setSync({ overlayOpacity: v });
+    });
+  }
+
+  if ($("overlayAutoHide")) {
+    $("overlayAutoHide").checked = !!settings.overlayAutoHide;
+    $("overlayAutoHide").addEventListener("change", async (e) => {
+      await setSync({ overlayAutoHide: !!e.target.checked });
+    });
+  }
+
+  if ($("overlayAutoHideSec")) {
+    $("overlayAutoHideSec").value = Number(settings.overlayAutoHideSec ?? 4);
+    $("overlayAutoHideSec").addEventListener("change", async (e) => {
+      const v = Math.max(1, Math.min(15, Number(e.target.value || 4)));
+      e.target.value = v;
+      await setSync({ overlayAutoHideSec: v });
+    });
+  }
+
+  if ($("overlaySnap")) {
+    $("overlaySnap").checked = settings.overlaySnap !== false;
+    $("overlaySnap").addEventListener("change", async (e) => {
+      await setSync({ overlaySnap: !!e.target.checked });
+    });
+  }
+
+  if ($("overlayShowEndTime")) {
+    $("overlayShowEndTime").checked = settings.overlayShowEndTime !== false;
+    $("overlayShowEndTime").addEventListener("change", async (e) => {
+      await setSync({ overlayShowEndTime: !!e.target.checked });
+    });
+  }
+
+  if ($("overlayShowAdd5")) {
+    $("overlayShowAdd5").checked = !!settings.overlayShowAdd5;
+    const apply = (on) => {
+      const b = $("tAdd5");
+      if (b) b.style.display = on ? "" : "none";
+    };
+    apply(!!settings.overlayShowAdd5);
+    $("overlayShowAdd5").addEventListener("change", async (e) => {
+      const on = !!e.target.checked;
+      apply(on);
+      await setSync({ overlayShowAdd5: on });
+    });
+  }
+
+
+  if ($("overlayShowVideoLeft")) {
+    $("overlayShowVideoLeft").checked = !!settings.overlayShowVideoLeft;
+    $("overlayShowVideoLeft").addEventListener("change", async (e) => {
+      await setSync({ overlayShowVideoLeft: !!e.target.checked });
+      await sendToActiveTab({ type: "sp:overlay:refresh" });
+    });
+  }
+
+  if ($("overlayShowActions")) {
+    $("overlayShowActions").checked = !!settings.overlayShowActions;
+    $("overlayShowActions").addEventListener("change", async (e) => {
+      await setSync({ overlayShowActions: !!e.target.checked });
+      await sendToActiveTab({ type: "sp:overlay:refresh" });
+    });
+  }
+
+
+  // Global: timer end chime
+  if ($("timerEndChime")) {
+    $("timerEndChime").checked = !!settings.timerEndChime;
+    $("timerEndChime").addEventListener("change", async (e) => {
+      await setSync({ timerEndChime: !!e.target.checked });
+    });
+  }
+
+  if ($("timerEndChimeVolume")) {
+    $("timerEndChimeVolume").value = Number(settings.timerEndChimeVolume ?? 40);
+    $("timerEndChimeVolume").addEventListener("change", async (e) => {
+      const v = Math.max(0, Math.min(100, Number(e.target.value || 40)));
+      e.target.value = v;
+      await setSync({ timerEndChimeVolume: v });
+    });
+  }
 
   // per-series toggles
   populatePerSeries(settings);
@@ -273,6 +500,7 @@ function populateBeta(settings) {
   $("betaWakeLock").checked = !!b.wakeLock;
   $("betaPauseHidden").checked = !!b.pauseOnHidden;
   $("betaPauseHiddenSec").value = Number(b.pauseOnHiddenSec ?? 10);
+  if ($("betaResumeVisible")) $("betaResumeVisible").checked = !!b.resumeOnVisible;
 
   $("betaFullscreen").checked = !!b.autoFullscreen;
   $("betaContinue").checked = !!b.autoContinueWatching;
@@ -287,7 +515,7 @@ function setBetaDisabledUI(disabled) {
     "betaRememberSpeed","betaDefaultSpeed",
     "betaSubs",
     "betaWakeLock",
-    "betaPauseHidden","betaPauseHiddenSec",
+    "betaPauseHidden","betaResumeVisible","betaPauseHiddenSec",
     "betaFullscreen",
     "betaContinue"
   ];
@@ -323,6 +551,7 @@ function bindBetaHandlers() {
   bind("betaWakeLock", "wakeLock", (t)=>!!t.checked);
   bind("betaPauseHidden", "pauseOnHidden", (t)=>!!t.checked);
   bind("betaPauseHiddenSec", "pauseOnHiddenSec", (t)=>Math.max(3, Math.min(600, Number(t.value||10))));
+  bind("betaResumeVisible", "resumeOnVisible", (t)=>!!t.checked);
   bind("betaFullscreen", "autoFullscreen", (t)=>!!t.checked);
   bind("betaContinue", "autoContinueWatching", (t)=>!!t.checked);
 }

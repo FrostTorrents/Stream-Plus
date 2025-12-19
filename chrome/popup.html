@@ -223,13 +223,23 @@
       <div class="card">
         <h2>Sleep timer</h2>
         <div class="btnrow">
+          <button id="tAdd5">+5m</button>
           <button id="tAdd15">+15m</button>
           <button id="tAdd30">+30m</button>
           <button id="tAdd60">+60m</button>
           <button id="tSub10">−10m</button>
+          <button id="tToEnd" class="ghost">End of episode</button>
+          <button id="tDefaultStart" class="ghost">Start default</button>
           <button id="tCancel" class="danger">Cancel</button>
         </div>
         <div class="divider"></div>
+        <div class="row">
+          <div class="stack">
+            <div class="label">Default timer (minutes)</div>
+            <div class="hint">Used by “Start default”</div>
+          </div>
+          <input type="number" id="timerDefaultMin" min="1" max="360" step="1" />
+        </div>
         <div class="row">
           <div class="stack">
             <div class="label">Show floating timer overlay</div>
@@ -239,10 +249,22 @@
         </div>
         <div class="row">
           <div class="stack">
-            <div class="label">Mute instead of pause</div>
-            <div class="hint">When timer ends</div>
+            <div class="label">When timer ends</div>
+            <div class="hint">Pause, mute, or reduce audio</div>
           </div>
-          <label class="toggle"><input type="checkbox" id="muteInstead" /></label>
+          <select id="timerEndAction" class="select">
+            <option value="pause">Pause</option>
+            <option value="mute">Mute</option>
+            <option value="reduce">Reduce audio</option>
+          </select>
+        </div>
+
+        <div class="row" id="reduceRow" style="display:none">
+          <div class="stack">
+            <div class="label">Reduce audio level (%)</div>
+            <div class="hint">Used if “Reduce audio” is selected</div>
+          </div>
+          <input type="number" id="reduceAudioLevel" min="0" max="100" step="1" />
         </div>
         <div class="row">
           <div class="stack">
@@ -271,6 +293,55 @@
             <div class="hint">Useful if Plex buttons appear slightly late</div>
           </div>
           <input type="number" id="delayMs" min="0" max="5000" step="50" />
+        </div>
+
+        
+        <div class="divider"></div>
+
+        <h2 style="margin-top:0">Defaults</h2>
+
+        <div class="row">
+          <div class="stack">
+            <div class="label">Default: Skip Intro</div>
+            <div class="hint">Used unless you disable it for a specific show</div>
+          </div>
+          <label class="toggle"><input type="checkbox" id="defaultSkipIntro" /></label>
+        </div>
+
+        <div class="row">
+          <div class="stack">
+            <div class="label">Default: Skip Credits</div>
+            <div class="hint">Used unless you disable it for a specific show</div>
+          </div>
+          <label class="toggle"><input type="checkbox" id="defaultSkipCredits" /></label>
+        </div>
+
+        <div class="row">
+          <div class="stack">
+            <div class="label">Default: Auto Next Episode</div>
+            <div class="hint">Used unless you disable it for a specific show</div>
+          </div>
+          <label class="toggle"><input type="checkbox" id="defaultNextEpisode" /></label>
+        </div>
+
+        <div class="divider"></div>
+
+        <h2 style="margin-top:0">Safety</h2>
+
+        <div class="row">
+          <div class="stack">
+            <div class="label">Min auto-action cooldown (ms)</div>
+            <div class="hint">Prevents back-to-back clicks (default 600)</div>
+          </div>
+          <input type="number" id="minAutoCooldownMs" min="100" max="5000" step="50" />
+        </div>
+
+        <div class="row">
+          <div class="stack">
+            <div class="label">Debug logs</div>
+            <div class="hint">Prints useful info to the Console for troubleshooting</div>
+          </div>
+          <label class="toggle"><input type="checkbox" id="debugLogs" /></label>
         </div>
 
         <div class="fine">
@@ -372,6 +443,15 @@
           </div>
           <label class="toggle"><input type="checkbox" id="betaPauseHidden" /></label>
         </div>
+
+        <div class="row">
+          <div class="stack">
+            <div class="label">Resume when visible again</div>
+            <div class="hint">Only if it was paused by “tab hidden”</div>
+          </div>
+          <label class="toggle"><input type="checkbox" id="betaResumeVisible" /></label>
+        </div>
+
         <div class="row">
           <div class="stack">
             <div class="label">Hidden delay (sec)</div>
@@ -403,18 +483,127 @@
     <section class="panel" id="panel-global">
       <div class="card">
         <h2>Global</h2>
+
+        <div class="row">
+          <div class="stack">
+            <div class="label">Automation only when tab is active</div>
+            <div class="hint">Prevents skips/next from firing in background tabs</div>
+          </div>
+          <label class="toggle"><input type="checkbox" id="activeTabOnly" /></label>
+        </div>
+
+        <div class="row">
+          <div class="stack">
+            <div class="label">Next Episode: start trying after (%)</div>
+            <div class="hint">Higher = safer. Default 80%</div>
+          </div>
+          <input type="number" id="nextLatePhasePct" min="50" max="98" step="1" />
+        </div>
+
+        <div class="divider"></div>
+
+        <h2 style="margin-top:0">Overlay</h2>
+
+        <div class="row">
+          <div class="stack">
+            <div class="label">Overlay opacity</div>
+            <div class="hint">0.25 (faint) → 1.0 (solid)</div>
+          </div>
+          <input type="number" id="overlayOpacity" min="0.25" max="1" step="0.05" />
+        </div>
+
+        <div class="row">
+          <div class="stack">
+            <div class="label">Auto-hide overlay when idle</div>
+            <div class="hint">Fades out until you move the mouse</div>
+          </div>
+          <label class="toggle"><input type="checkbox" id="overlayAutoHide" /></label>
+        </div>
+
+        <div class="row">
+          <div class="stack">
+            <div class="label">Auto-hide delay (seconds)</div>
+            <div class="hint">How long before it fades</div>
+          </div>
+          <input type="number" id="overlayAutoHideSec" min="1" max="15" step="1" />
+        </div>
+
+        <div class="row">
+          <div class="stack">
+            <div class="label">Snap overlay to corners</div>
+            <div class="hint">On drag release</div>
+          </div>
+          <label class="toggle"><input type="checkbox" id="overlaySnap" /></label>
+        </div>
+
+        <div class="row">
+          <div class="stack">
+            <div class="label">Show end time</div>
+            <div class="hint">Example: Ends 10:42 PM</div>
+          </div>
+          <label class="toggle"><input type="checkbox" id="overlayShowEndTime" /></label>
+        </div>
+
+        <div class="row">
+          <div class="stack">
+            <div class="label">Show +5 timer button</div>
+            <div class="hint">Adds +5 in overlay and timer tab</div>
+          </div>
+          <label class="toggle"><input type="checkbox" id="overlayShowAdd5" /></label>
+        </div>
+
+        
+
+        <div class="row">
+          <div class="stack">
+            <div class="label">Show episode remaining</div>
+            <div class="hint">Adds a small “Episode left” line to the overlay</div>
+          </div>
+          <label class="toggle"><input type="checkbox" id="overlayShowVideoLeft" /></label>
+        </div>
+
+        <div class="row">
+          <div class="stack">
+            <div class="label">Show overlay action buttons</div>
+            <div class="hint">Intro / Credits / Next buttons inside the overlay</div>
+          </div>
+          <label class="toggle"><input type="checkbox" id="overlayShowActions" /></label>
+        </div>
+<div class="divider"></div>
+
+        <h2 style="margin-top:0">Timer end</h2>
+
+        <div class="row">
+          <div class="stack">
+            <div class="label">Play chime</div>
+            <div class="hint">Small beep when timer finishes</div>
+          </div>
+          <label class="toggle"><input type="checkbox" id="timerEndChime" /></label>
+        </div>
+
+        <div class="row">
+          <div class="stack">
+            <div class="label">Chime volume (%)</div>
+            <div class="hint">Only used if chime is enabled</div>
+          </div>
+          <input type="number" id="timerEndChimeVolume" min="0" max="100" step="5" />
+        </div>
+
+        <div class="divider"></div>
+
         <div class="row">
           <div class="stack">
             <div class="label">Volume level (%)</div>
-            <div class="hint">Reserved for future features (kept for compatibility)</div>
+            <div class="hint">Used by some beta features</div>
           </div>
           <input type="number" id="volumeLevel" min="0" max="100" step="1" />
         </div>
+
         <div class="fine">
           Want deeper controls? Open the full options page:
-          <a href="#" id="openOptions">Options</a>
+          <a href="#" id="openOptions">Options</a> · <a href="https://square.link/u/JZUUls2L" target="_blank" rel="noopener">Buy me a coffee</a>
         </div>
-      </div>
+</div>
     </section>
   </main>
 

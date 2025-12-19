@@ -7,10 +7,37 @@ const DEFAULTS = {
   // legacy/global
   globalEnabled: true,
   skipDelayMs: 500,
+  minAutoCooldownMs: 600,
+  debugLogs: false,
+  defaultSkipIntro: true,
+  defaultSkipCredits: true,
+  defaultNextEpisode: true,
   volumeLevel: 50,
   muteInsteadOfPause: false,
+  timerEndAction: "pause",
+  reduceAudioLevel: 10,
   dimScreen: true,
   countdownVisible: false,
+  timerDefaultMin: 30,
+
+  // automation safety
+  activeTabOnly: true,
+  nextLatePhasePct: 80,
+
+  // overlay controls
+  overlayOpacity: 1.0,          // 0.25..1
+  overlayAutoHide: false,
+  overlayAutoHideSec: 4,
+  overlaySnap: true,
+  overlayShowEndTime: true,
+  overlayShowAdd5: false,
+  overlayShowVideoLeft: true,
+  overlayShowActions: true,
+  overlayLocked: false,
+
+  // timer end feedback
+  timerEndChime: false,
+  timerEndChimeVolume: 40,
 
   // per-series rules: { [seriesKey]: { skipIntro, skipCredits, skipNext, ... } }
   perShowRules: {},
@@ -26,6 +53,7 @@ const DEFAULTS = {
     wakeLock: false,
     pauseOnHidden: false,
     pauseOnHiddenSec: 10,
+    resumeOnVisible: false,
     autoFullscreen: false,
 
     // timer helpers
