@@ -9,7 +9,6 @@ Smart sleep timer + intro or credits skipper for Plex Web. Minimal overlay, per-
 - ⏱️ Timer pauses with playback and resumes on play
 - ➕ Additive presets for fast stacking
 - 🌙 Optional fade-to-sleep volume ramp
-- 🧪 Beta tab for early features
 
 ---
 
@@ -40,7 +39,7 @@ Smart sleep timer + intro or credits skipper for Plex Web. Minimal overlay, per-
   - 🛑 Auto-stop after N consecutive episodes
   - 🔁 Counter resets after 10 minutes idle
 
-- 🧠 **Binge Suggestions** *(local only)*
+- 🧠 **Binge Suggestions** *(Planned)*
   - 💡 Suggests Episode Guard values and quick continue picks
 
 ---
@@ -48,7 +47,7 @@ Smart sleep timer + intro or credits skipper for Plex Web. Minimal overlay, per-
 ## 🧪 Compatibility
 - 🖥️ Plex Web
 - 🧭 Chromium-based browsers: Chrome, Edge, Brave, Opera
-- 🦊 Firefox (temporary install supported)
+- 🦊 Firefox (legacy outdated compared to chrome version) (temporary install supported)
 
 ---
 
